@@ -51,7 +51,7 @@ run_test() {
 run_docs() {
     local cmd=$1
     shift
-    
+
     run_uvx() {
         uvx --with mkdocs-material \
             --with mkdocs-git-revision-date-localized-plugin \
