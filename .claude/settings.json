@@ -1,0 +1,7 @@
+{
+  "enabledPlugins": {
+    "github-workflow@dev-agent-skills": true,
+    "commit-commands@claude-plugins-official": true,
+    "modern-python@trailofbits": true
+  }
+}
