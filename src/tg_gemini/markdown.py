@@ -116,7 +116,7 @@ def split_message_code_fence_aware(text: str, max_len: int = 4096) -> list[str]:
         return [text]
 
     chunks = []
-    while text:
+    while True:
         if len(text) <= max_len:
             chunks.append(text)
             break

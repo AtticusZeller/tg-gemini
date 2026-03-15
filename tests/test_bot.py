@@ -11,6 +11,7 @@ from tg_gemini.bot import (
     _resolve_id,
     _throttle_update,
     _update_ui,
+    cmd_current,
     cmd_delete,
     cmd_list,
     cmd_model,
@@ -19,7 +20,6 @@ from tg_gemini.bot import (
     cmd_resume,
     cmd_start,
     cmd_status,
-    cmd_switch,
     handle_message,
     start_bot,
 )
@@ -130,29 +130,21 @@ def test_resolve_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cmd_switch() -> None:
+async def test_cmd_current() -> None:
     message = MagicMock(spec=Message)
     message.from_user = User(id=1, is_bot=False, first_name="Test")
     message.answer = AsyncMock()
     sessions = SessionManager()
-
-    # No args
-    command = MagicMock()
-    command.args = None
-    await cmd_switch(message, command, sessions)
-    assert "Usage" in message.answer.call_args[0][0]
-
-    # Success
-    command.args = "id-1"
-    await cmd_switch(message, command, sessions)
-    assert sessions.get(1).session_id == "id-1"
+    config = AppConfig(TelegramConfig(VALID_TOKEN), GeminiConfig("auto"))
+    await cmd_current(message, sessions, config)
+    message.answer.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_cmd_switch_no_user() -> None:
+async def test_cmd_current_no_user() -> None:
     message = MagicMock(spec=Message)
     message.from_user = None
-    await cmd_switch(message, MagicMock(), SessionManager())
+    await cmd_current(message, SessionManager(), MagicMock())
     message.answer.assert_not_called()
 
 
@@ -516,6 +508,15 @@ async def test_process_stream_unhandled_event() -> None:
     agent = AsyncMock()
 
     async def mock_stream(*args: Any, **kwargs: Any) -> Any:
+        # Initial event
+        yield InitEvent(session_id="id", model="m")
+        # message role != assistant
+        yield MessageEvent(role="user", content="u")
+        # tool use
+        yield ToolUseEvent(tool_name="t", tool_id="i", parameters={})
+        # error
+        yield ErrorEvent(severity="error", message="e")
+        # result (fallthrough)
         yield ResultEvent(status="success")
 
     agent.run_stream = mock_stream
