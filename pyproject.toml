@@ -121,6 +121,7 @@ split-on-trailing-comma = false
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ARG001", "S101", "ANN"]
+"src/tg_gemini/cli.py" = ["PLC0415"]
 
 [tool.ruff.format]
 docstring-code-format     = true

@@ -13,7 +13,7 @@ def test_load_config_missing_file(tmp_path: Path) -> None:
 def test_load_config_invalid_telegram(tmp_path: Path) -> None:
     cfg_file = tmp_path / "invalid.toml"
     cfg_file.write_text("[gemini]\nmodel = 'auto'")
-    with pytest.raises(ValueError, match="'telegram.bot_token' is required"):
+    with pytest.raises(ValueError, match=r"'telegram\.bot_token' is required"):
         load_config(cfg_file)
 
 

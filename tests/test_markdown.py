@@ -203,7 +203,7 @@ def test_split_message_no_code_tag_v2() -> None:
     # Target line 161-162 in markdown.py
     # text starts with <pre>, then we split BEFORE any <code> tag
     text = "<pre>          " + "a" * 50
-    max_len = 10 # Split after "<pre>     "
+    max_len = 10  # Split after "<pre>     "
     chunks = split_message_code_fence_aware(text, max_len=max_len)
     min_chunks = 2
     assert len(chunks) >= min_chunks
@@ -222,7 +222,7 @@ def test_split_message_outside_code() -> None:
     text = "<pre><code>code</code></pre>\nOutside text"
     chunks = split_message_code_fence_aware(text, max_len=max_len)
     assert len(chunks) == 1
-    
+
     text_long = "<pre><code>code</code></pre>" + "a" * 150
     chunks = split_message_code_fence_aware(text_long, max_len=max_len)
     min_chunks = 2

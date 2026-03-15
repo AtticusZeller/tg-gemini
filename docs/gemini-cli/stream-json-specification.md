@@ -48,11 +48,6 @@ Emitted at the start of a session.
 | `session_id` | string | Unique identifier for the current session. |
 | `model`      | string | The name of the model being used.         |
 
-**Example:**
-```json
-{"type":"init","timestamp":"2026-03-15T10:00:00.000Z","session_id":"abc-123","model":"gemini-2.5-pro"}
-```
-
 ### 2. `message`
 Emitted when the assistant or user sends a message.
 
@@ -62,43 +57,24 @@ Emitted when the assistant or user sends a message.
 | `content` | string                    | The text content of the message.                                |
 | `delta`   | boolean                   | (Optional) If `true`, the content is a chunk of a larger stream. |
 
-**Example:**
-```json
-{"type":"message","timestamp":"2026-03-15T10:00:01.000Z","role":"assistant","content":"Hello! How can I help you today?"}
-```
-
 ### 3. `tool_use`
 Emitted when the assistant decides to call a tool.
 
-| Field        | Type   | Description                                                                                                                                                                                                                                                                                                  |
-| ------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `tool_name`  | string | The name of the tool being called. See [Tool Names](#tool-names) for possible values.                                                                                                                                                                                                                        |
-| `tool_id`    | string | A unique identifier for this specific tool call (e.g., `call_asdf123`). Used to correlate with `tool_result`.                                                                                                                                                                                                |
-| `parameters` | object | The arguments passed to the tool as a key-value map (`Record<string, unknown>`). The keys depend on the `tool_name`. For example, `read_file` uses `file_path` (string), `start_line` (number), and `end_line` (number). |
-
-**Example:**
-```json
-{"type":"tool_use","timestamp":"2026-03-15T10:00:02.000Z","tool_name":"read_file","tool_id":"call_456","parameters":{"file_path":"README.md","start_line":1,"end_line":10}}
-```
+| Field        | Type   | Description                                                                                             |
+| ------------ | ------ | ------------------------------------------------------------------------------------------------------- |
+| `tool_name`  | string | The name of the tool being called. See [Tool Names](#tool-names) for possible values.                    |
+| `tool_id`    | string | A unique identifier for this specific tool call. Used to correlate with `tool_result`.                  |
+| `parameters` | object | The arguments passed to the tool. See [Core Tool Parameter Reference](#core-tool-parameter-reference). |
 
 ### 4. `tool_result`
 Emitted after a tool has finished executing.
 
-| Field     | Type                  | Description                                                |
-| --------- | --------------------- | ---------------------------------------------------------- |
-| `tool_id` | string                | Matches the `tool_id` from the corresponding `tool_use`.   |
-| `status`  | `"success"` \| `"error"` | Whether the tool execution was successful.                  |
-| `output`  | string                | (Optional) The output of the tool if successful.           |
-| `error`   | object                | (Optional) Error details if the tool failed.                |
-
-**`error` object structure:**
-- `type`: string (e.g., `"RuntimeError"`, `"AbortError"`, `"MCP_TOOL_ERROR"`)
-- `message`: string
-
-**Example:**
-```json
-{"type":"tool_result","timestamp":"2026-03-15T10:00:03.000Z","tool_id":"call_456","status":"success","output":"# Project README..."}
-```
+| Field     | Type                  | Description                                              |
+| --------- | --------------------- | -------------------------------------------------------- |
+| `tool_id` | string                | Matches the `tool_id` from the corresponding `tool_use`. |
+| `status`  | `"success"` \| `"error"` | Whether the tool execution was successful.              |
+| `output`  | string                | (Optional) The output of the tool if successful.         |
+| `error`   | object                | (Optional) Error details if the tool failed.              |
 
 ### 5. `error`
 Emitted when a system-level error or warning occurs.
@@ -107,11 +83,6 @@ Emitted when a system-level error or warning occurs.
 | ---------- | ---------------------- | -------------------------------- |
 | `severity` | `"warning"` \| `"error"` | The severity level of the error. |
 | `message`  | string                 | The error message.               |
-
-**Example:**
-```json
-{"type":"error","timestamp":"2026-03-15T10:00:04.000Z","severity":"error","message":"Failed to connect to MCP server."}
-```
 
 ### 6. `result`
 Emitted at the end of a prompt execution.
@@ -122,56 +93,118 @@ Emitted at the end of a prompt execution.
 | `error`  | object                | (Optional) Final error details if applicable. |
 | `stats`  | object                | (Optional) Token usage and timing statistics.  |
 
-**`stats` object structure:**
-
-| Field          | Type   | Description                                     |
-| -------------- | ------ | ----------------------------------------------- |
-| `total_tokens` | number | Total tokens used across all models.            |
-| `input_tokens` | number | Total input (prompt) tokens used.               |
-| `output_tokens`| number | Total output (candidate) tokens used.           |
-| `cached`       | number | Tokens served from cache.                       |
-| `input`        | number | Raw input tokens (excluding cache).             |
-| `duration_ms`  | number | Execution duration in milliseconds.             |
-| `tool_calls`   | number | Total number of tool calls made.                |
-| `models`       | object | Per-model breakdown (`Record<string, ModelStats>`).|
-
-**`ModelStats` object structure:**
-- `total_tokens`: number
-- `input_tokens`: number
-- `output_tokens`: number
-- `cached`: number
-- `input`: number
-
-**Example:**
-```json
-{"type":"result","timestamp":"2026-03-15T10:00:05.000Z","status":"success","stats":{"total_tokens":120,"input_tokens":100,"output_tokens":20,"cached":0,"input":100,"duration_ms":1500,"tool_calls":1,"models":{"gemini-2.5-pro":{"total_tokens":120,"input_tokens":100,"output_tokens":20,"cached":0,"input":100}}}}
-```
-
 ---
 
 ## Tool Names
 
-The `tool_name` field in `tool_use` events can contain several types of names:
-
 ### Core Tools
-These are built-in tools provided by Gemini CLI.
-- `glob`: Search for files matching a pattern.
-- `grep_search`: Search for text patterns within files.
-- `list_directory`: List contents of a directory.
-- `read_file`: Read the content of a single file.
-- `write_file`: Create or overwrite a file.
-- `replace`: Surgical text replacement in a file.
-- `run_shell_command`: Execute shell commands.
-- `google_web_search`: Perform a Google search.
-- `web_fetch`: Fetch content from a URL.
-- `save_memory`: Persist facts across sessions.
-- `ask_user`: Request input from the user.
-- `enter_plan_mode` / `exit_plan_mode`: Manage complex task planning.
-- `activate_skill`: Enable specialized agent skills.
+- `glob`
+- `grep_search`
+- `list_directory`
+- `read_file`
+- `write_file`
+- `replace`
+- `run_shell_command`
+- `google_web_search`
+- `web_fetch`
+- `save_memory`
+- `ask_user`
+- `enter_plan_mode`
+- `exit_plan_mode`
+- `activate_skill`
 
 ### MCP Tools
-Tools discovered via Model Context Protocol (MCP) servers follow a specific naming convention:
-- **Format**: `mcp_{server_name}_{tool_name}`
-- **Example**: `mcp_github_create_pull_request`
+Format: `mcp_{server_name}_{tool_name}` (e.g., `mcp_github_create_pull_request`).
 
-All MCP tool names start with the `mcp_` prefix.
+---
+
+## Core Tool Parameter Reference
+
+This section defines the parameter schema for each core tool emitted in `tool_use` events.
+
+### `read_file`
+Reads the content of a single file.
+- `file_path` (string, required): Path to the file.
+- `start_line` (number): 1-based start line.
+- `end_line` (number): 1-based end line (inclusive).
+
+### `write_file`
+Creates or overwrites a file.
+- `file_path` (string, required): Path to the file.
+- `content` (string, required): Complete literal content to write.
+
+### `grep_search`
+Search for patterns within file contents.
+- `pattern` (string, required): Regex or literal pattern.
+- `dir_path` (string): Directory or file to search.
+- `include_pattern` (string): Glob to filter files (e.g., `*.ts`).
+- `exclude_pattern` (string): Regex to exclude matches.
+- `names_only` (boolean): If true, only return file paths.
+- `case_sensitive` (boolean): Case-sensitive search.
+- `fixed_strings` (boolean): Treat pattern as literal string.
+- `context` (number): Number of context lines.
+- `after` (number): Lines after match.
+- `before` (number): Lines before match.
+- `no_ignore` (boolean): Ignore `.gitignore`.
+- `max_matches_per_file` (number): Limit matches per file.
+- `total_max_matches` (number): Overall limit (default 100).
+
+### `glob`
+Find files matching glob patterns.
+- `pattern` (string, required): Glob pattern (e.g., `src/**/*.ts`).
+- `dir_path` (string): Directory to search within.
+- `case_sensitive` (boolean): Case-sensitive matching.
+- `respect_git_ignore` (boolean): Follow `.gitignore`.
+- `respect_gemini_ignore` (boolean): Follow `.geminiignore`.
+
+### `list_directory`
+List contents of a directory.
+- `dir_path` (string, required): Path to list.
+- `ignore` (array of strings): Glob patterns to ignore.
+- `file_filtering_options` (object):
+    - `respect_git_ignore` (boolean)
+    - `respect_gemini_ignore` (boolean)
+
+### `replace`
+Surgical text replacement.
+- `file_path` (string, required): Path to the file.
+- `instruction` (string, required): Semantic explanation of the change.
+- `old_string` (string, required): Exact literal text to find.
+- `new_string` (string, required): Exact literal replacement.
+- `allow_multiple` (boolean): Replace all occurrences.
+
+### `run_shell_command`
+Execute shell commands.
+- `command` (string, required): Exact bash or powershell command.
+- `description` (string): Concise summary for the user.
+- `dir_path` (string): Execution directory.
+- `is_background` (boolean): Run in background.
+
+### `google_web_search`
+- `query` (string, required): Search query.
+
+### `web_fetch`
+- `prompt` (string, required): Prompt containing up to 20 URLs and processing instructions.
+
+### `save_memory`
+- `fact` (string, required): Global preference or fact to persist.
+
+### `ask_user`
+- `questions` (array, required): 1-4 question objects.
+    - `question` (string, required): Full question text.
+    - `header` (string, required): Short tag (e.g., "Auth").
+    - `type` (string, required): `"choice"`, `"text"`, or `"yesno"`.
+    - `options` (array): For `"choice"` type.
+        - `label` (string, required): Option display text.
+        - `description` (string, required): Option explanation.
+    - `multiSelect` (boolean): For `"choice"` type.
+    - `placeholder` (string): Input hint.
+
+### `enter_plan_mode`
+- `reason` (string): Explanation for entering plan mode.
+
+### `exit_plan_mode`
+- `plan_path` (string, required): Path to the finalized plan file.
+
+### `activate_skill`
+- `name` (string, required): Name of the specialized skill to activate.

@@ -16,6 +16,9 @@ class SessionInfo:
     session_id: str
 
 
+STREAM_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB for large tool outputs
+
+
 class GeminiAgent:
     def __init__(self, config: GeminiConfig) -> None:
         self.config = config
@@ -47,6 +50,7 @@ class GeminiAgent:
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=STREAM_BUFFER_LIMIT,
                 cwd=self.config.working_dir,
             )
         except FileNotFoundError:
@@ -55,14 +59,7 @@ class GeminiAgent:
 
         if proc.stdout:
             while True:
-                try:
-                    line = await proc.stdout.readline()
-                except ValueError:  # LimitOverrunError (inherited from ValueError in readline)
-                    # Read until newline manually if limit exceeded
-                    # This happens for very large JSON objects
-                    chunk = await proc.stdout.readuntil(b"\n")
-                    line = chunk
-                
+                line = await proc.stdout.readline()
                 if not line:
                     break
                 event = self._parse_line(line.decode())

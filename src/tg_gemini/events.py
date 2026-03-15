@@ -1,11 +1,11 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     INIT = "init"
     MESSAGE = "message"
     TOOL_USE = "tool_use"

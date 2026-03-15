@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import html as html_mod
 import time
 from dataclasses import dataclass, field
 
@@ -23,6 +24,9 @@ from tg_gemini.markdown import md_to_telegram_html, split_message_code_fence_awa
 TELEGRAM_MAX_LENGTH = 4096
 UPDATE_INTERVAL = 1.5
 UPDATE_CHAR_THRESHOLD = 200
+TOOL_CMD_TRUNCATE = 4096
+TOOL_PARAM_TRUNCATE = 4096
+TOOL_CONTENT_PREVIEW = 500
 
 
 @dataclass
@@ -79,7 +83,7 @@ async def cmd_new(message: Message, command: CommandObject, sessions: SessionMan
         return
     session = sessions.get(message.from_user.id)
     session.session_id = None
-    session.pending_name = command.args if command.args else None
+    session.pending_name = command.args or None
 
     msg = "Session cleared. Next message starts a new conversation"
     if session.pending_name:
@@ -148,7 +152,6 @@ async def cmd_resume(message: Message, command: CommandObject, sessions: Session
         session.session_id = target_id
         await message.answer(f"Resuming session: <code>{target_id}</code>", parse_mode="HTML")
     else:
-        # If no args, list or just resume latest
         session.session_id = "latest"
         await message.answer("Resuming latest session.")
 
@@ -170,7 +173,6 @@ async def cmd_delete(
     if success:
         if session.session_id == target_id:
             session.session_id = None
-        # Clean up custom name if any
         session.custom_names.pop(target_id, None)
         await message.answer(f"Deleted session: <code>{target_id}</code>", parse_mode="HTML")
     else:
@@ -215,21 +217,147 @@ async def cmd_current(message: Message, sessions: SessionManager, config: AppCon
     await message.answer(current, parse_mode="HTML")
 
 
-async def _throttle_update(
-    reply: Message,
-    accumulated: str,
-    status_lines: list[str],
-    last_update_time: float,
-    last_update_len: int,
+def _truncate(text: str, limit: int) -> str:
+    return text[:limit] + "…" if len(text) > limit else text
+
+
+def _esc(text: str) -> str:
+    return html_mod.escape(text)
+
+
+def _pre(text: str, lang: str = "") -> str:
+    cls = f' class="language-{lang}"' if lang else ""
+    return f"<pre><code{cls}>{_esc(text)}</code></pre>"
+
+
+def _fmt_shell(params: dict[str, object]) -> str:
+    cmd = _truncate(str(params["command"]), TOOL_CMD_TRUNCATE)
+    desc = params.get("description", "")
+    title = _esc(str(desc)) if desc else "run_shell_command"
+    return f"🔧 <b>{title}</b>\n{_pre(cmd, 'bash')}"
+
+
+def _fmt_file_op(name: str, params: dict[str, object]) -> str:
+    fp = _esc(str(params["file_path"]))
+    parts: list[str] = [f"🔧 <b>{name}</b>: <code>{fp}</code>"]
+    if name == "replace":
+        if "instruction" in params:
+            instr = _esc(_truncate(str(params["instruction"]), TOOL_PARAM_TRUNCATE))
+            parts.append(f"<i>{instr}</i>")
+        old = str(params.get("old_string", ""))
+        new = str(params.get("new_string", ""))
+        if old or new:
+            diff_lines = []
+            if old:
+                diff_lines.append(f"- {_truncate(old, TOOL_CONTENT_PREVIEW)}")
+            if new:
+                diff_lines.append(f"+ {_truncate(new, TOOL_CONTENT_PREVIEW)}")
+            parts.append(_pre("\n".join(diff_lines)))
+    elif name == "write_file" and "content" in params:
+        preview = _truncate(str(params["content"]), TOOL_CONTENT_PREVIEW)
+        parts.append(_pre(preview))
+    elif name == "read_file":
+        start = params.get("start_line")
+        end = params.get("end_line")
+        if start and end:
+            parts[0] += f" (L{start}-L{end})"
+        elif start:
+            parts[0] += f" (from L{start})"
+    return "\n".join(parts)
+
+
+def _fmt_search(name: str, params: dict[str, object]) -> str | None:
+    if name == "list_directory" and "dir_path" in params:
+        return f"🔧 <b>list_directory</b>: <code>{_esc(str(params['dir_path']))}</code>"
+    if name == "glob" and "pattern" in params:
+        return f"🔧 <b>glob</b>: <code>{_esc(str(params['pattern']))}</code>"
+    if name == "grep_search" and ("pattern" in params or "query" in params):
+        query = str(params.get("pattern") or params.get("query", ""))
+        return f"🔧 <b>grep_search</b>: <code>{_esc(query)}</code>"
+    if name == "google_web_search" and "query" in params:
+        return f"🔧 <b>google_web_search</b>: {_esc(str(params['query']))}"
+    if name == "web_fetch" and ("prompt" in params or "url" in params):
+        val = str(params.get("prompt") or params.get("url", ""))
+        return f"🔧 <b>web_fetch</b>: {_esc(_truncate(val, TOOL_PARAM_TRUNCATE))}"
+    return None
+
+
+def _format_tool_html(event: ToolUseEvent) -> str:
+    """Format a tool use event into HTML for Telegram display."""
+    name = event.tool_name
+    params = event.parameters
+
+    if name == "run_shell_command" and "command" in params:
+        return _fmt_shell(params)
+    if name in ("read_file", "write_file", "replace") and "file_path" in params:
+        return _fmt_file_op(name, params)
+
+    result = _fmt_search(name, params)
+    if result:
+        return result
+
+    if params:
+        first_val = _truncate(str(next(iter(params.values()))), TOOL_PARAM_TRUNCATE)
+        return f"🔧 <b>{name}</b>: {_esc(first_val)}"
+
+    return f"🔧 {name}"
+
+
+async def _throttle_edit(
+    reply: Message, accumulated: str, last_update_time: float, last_update_len: int
 ) -> tuple[float, int]:
     now = time.monotonic()
     if (
         now - last_update_time >= UPDATE_INTERVAL
         and len(accumulated) - last_update_len >= UPDATE_CHAR_THRESHOLD
     ):
-        await _update_ui(reply, accumulated, status_lines)
+        await _edit_reply(reply, accumulated)
         return now, len(accumulated)
     return last_update_time, last_update_len
+
+
+@dataclass
+class _StreamState:
+    accumulated: str = ""
+    tool_messages: dict[str, Message] = field(default_factory=dict)
+    tool_html: dict[str, str] = field(default_factory=dict)
+    last_update_time: float = 0.0
+    last_update_len: int = 0
+    aborted: bool = False
+    stats_footer: str = ""
+
+
+async def _handle_event(
+    event: object, session: UserSession, state: _StreamState, reply: Message
+) -> None:
+    """Process a single stream event, updating state and UI."""
+    if isinstance(event, InitEvent):
+        session.session_id = event.session_id
+        if session.pending_name and event.session_id:
+            session.custom_names[event.session_id] = session.pending_name
+            session.pending_name = None
+    elif isinstance(event, MessageEvent) and event.role == "assistant":
+        state.accumulated = (state.accumulated + event.content) if event.delta else event.content
+        state.last_update_time, state.last_update_len = await _throttle_edit(
+            reply, state.accumulated, state.last_update_time, state.last_update_len
+        )
+    elif isinstance(event, ToolUseEvent):
+        tool_html = _format_tool_html(event)
+        tool_msg = await reply.answer(tool_html, parse_mode="HTML")
+        state.tool_messages[event.tool_id] = tool_msg
+        state.tool_html[event.tool_id] = tool_html
+    elif isinstance(event, ToolResultEvent) and event.tool_id in state.tool_messages:
+        tool_msg = state.tool_messages[event.tool_id]
+        icon = "✅" if event.status == "success" else "❌"
+        new_html = state.tool_html[event.tool_id].replace("🔧", icon, 1)
+        with contextlib.suppress(Exception):
+            await tool_msg.edit_text(new_html, parse_mode="HTML")
+    elif isinstance(event, ErrorEvent):
+        await reply.edit_text(f"Error: {event.message}")
+        state.aborted = True
+    elif isinstance(event, ResultEvent) and event.stats:
+        s = event.stats
+        state.stats_footer = f"({s.total_tokens} tokens, {s.duration_ms / 1000:.1f}s)"
 
 
 async def _process_stream(
@@ -238,60 +366,33 @@ async def _process_stream(
     if not message.bot:
         return "", []
 
-    accumulated = ""
-    status_lines: list[str] = []
-    last_update_time = time.monotonic()
-    last_update_len = 0
-
     reply = await message.answer("Thinking...")
-
-    # Map tool_id to its index in status_lines
-    active_tools: dict[str, int] = {}
+    state = _StreamState(last_update_time=time.monotonic())
 
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         async for event in agent.run_stream(message.text or "", session.session_id, session.model):
-            if isinstance(event, InitEvent):
-                session.session_id = event.session_id
-                if session.pending_name and event.session_id:
-                    session.custom_names[event.session_id] = session.pending_name
-                    session.pending_name = None
-            elif isinstance(event, MessageEvent):
-                if event.role == "assistant":
-                    if event.delta:
-                        accumulated += event.content
-                    else:
-                        accumulated = event.content
-                    last_update_time, last_update_len = await _throttle_update(
-                        reply, accumulated, status_lines, last_update_time, last_update_len
-                    )
-            elif isinstance(event, ToolUseEvent):
-                active_tools[event.tool_id] = len(status_lines)
-                status_lines.append(f"🔧 {event.tool_name}")
-                await _update_ui(reply, accumulated, status_lines)
-            elif isinstance(event, ToolResultEvent):
-                if event.tool_id in active_tools:
-                    idx = active_tools[event.tool_id]
-                    icon = "✅" if event.status == "success" else "❌"
-                    # Update the existing line
-                    tool_name = status_lines[idx].split(" ", 1)[1]
-                    status_lines[idx] = f"{icon} {tool_name}"
-                    await _update_ui(reply, accumulated, status_lines)
-            elif isinstance(event, ErrorEvent):
-                await reply.edit_text(f"Error: {event.message}")
+            await _handle_event(event, session, state, reply)
+            if state.aborted:
                 return "", []
-            elif isinstance(event, ResultEvent) and event.stats:
-                # Add a footer with token info
-                s = event.stats
-                status_lines.append(
-                    f"\n<i>({s.total_tokens} tokens, {s.duration_ms/1000:.1f}s)</i>"
-                )
 
-    if accumulated or status_lines:
-        await _update_ui(reply, accumulated, status_lines)
-    else:
+    if state.accumulated:
+        if state.tool_messages:
+            # Tools were used: delete "Thinking..." and send response as new message
+            # so it appears AFTER tool messages in correct order
+            with contextlib.suppress(Exception):
+                await reply.delete()
+            await _send_new(reply, state.accumulated)
+        else:
+            # No tools: edit "Thinking..." in place (clean Q&A flow)
+            await _send_final(reply, state.accumulated)
+    elif not state.tool_messages:
         await reply.edit_text("No response.")
 
-    return accumulated, status_lines
+    if state.stats_footer:
+        with contextlib.suppress(Exception):
+            await reply.answer(f"<i>{state.stats_footer}</i>", parse_mode="HTML")
+
+    return state.accumulated, list(state.tool_messages.keys())
 
 
 @router.message(F.text & ~F.text.startswith("/"))
@@ -311,41 +412,45 @@ async def handle_message(
         await _process_stream(message, session, agent)
 
 
-async def _update_ui(reply: Message, accumulated: str, status_lines: list[str]) -> None:
-    text = accumulated if accumulated else ""
-    if status_lines:
-        if text:
-            text += "\n\n"
-        text += "\n".join(status_lines[-5:])
+async def _edit_reply(reply: Message, accumulated: str) -> None:
+    """Edit the reply message with current accumulated text (streaming preview)."""
+    html = md_to_telegram_html(accumulated)
+    chunks = split_message_code_fence_aware(html, max_len=TELEGRAM_MAX_LENGTH)
+    if chunks:
+        with contextlib.suppress(Exception):
+            await reply.edit_text(chunks[0], parse_mode="HTML")
 
-    if not text:
-        text = "Thinking..."
 
-    html_full = md_to_telegram_html(text)
-    chunks = split_message_code_fence_aware(html_full, max_len=TELEGRAM_MAX_LENGTH)
+async def _send_final(reply: Message, accumulated: str) -> None:
+    """Edit the reply with final response, splitting into extra messages if needed."""
+    html = md_to_telegram_html(accumulated)
+    chunks = split_message_code_fence_aware(html, max_len=TELEGRAM_MAX_LENGTH)
 
     if not chunks:
         return
 
-    # Update the first message
     with contextlib.suppress(Exception):
         await reply.edit_text(chunks[0], parse_mode="HTML")
 
-    # If there are more chunks, send them as new messages
-    # Note: In a real streaming scenario, we'd need to track these extra messages
-    # but for now we just send them at the end or when they appear.
-    # For simplicity during streaming, we only edit the first one.
-    # The final call to _update_ui after the loop will send all of them.
-    if len(chunks) > 1 and reply.bot:
+    if reply.bot:
         for chunk in chunks[1:]:
             with contextlib.suppress(Exception):
                 await reply.answer(chunk, parse_mode="HTML")
 
 
+async def _send_new(reply: Message, accumulated: str) -> None:
+    """Send the final response as new message(s) after tool messages."""
+    html = md_to_telegram_html(accumulated)
+    chunks = split_message_code_fence_aware(html, max_len=TELEGRAM_MAX_LENGTH)
+
+    for chunk in chunks:
+        with contextlib.suppress(Exception):
+            await reply.answer(chunk, parse_mode="HTML")
+
+
 async def start_bot(config: AppConfig) -> None:
     bot = Bot(token=config.telegram.bot_token)
-    
-    # Initialize bot commands
+
     commands = [
         BotCommand(command="start", description="Welcome and help"),
         BotCommand(command="new", description="Start a new session"),

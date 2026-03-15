@@ -1,11 +1,10 @@
-import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from tg_gemini.config import GeminiConfig
 from tg_gemini.events import ErrorEvent, InitEvent, MessageEvent
-from tg_gemini.gemini import GeminiAgent
+from tg_gemini.gemini import STREAM_BUFFER_LIMIT, GeminiAgent
 
 
 @pytest.mark.asyncio
@@ -24,12 +23,14 @@ async def test_agent_run_stream_success(tmp_path: pytest.TempPathFactory) -> Non
     agent = GeminiAgent(config)
 
     mock_stdout = AsyncMock()
-    mock_stdout.readline = AsyncMock(side_effect=[
-        b'{"type": "init", "session_id": "123", "model": "pro"}\n',
-        b"invalid json\n",
-        b'{"type": "message", "role": "assistant", "content": "hi"}\n',
-        b""
-    ])
+    mock_stdout.readline = AsyncMock(
+        side_effect=[
+            b'{"type": "init", "session_id": "123", "model": "pro"}\n',
+            b"invalid json\n",
+            b'{"type": "message", "role": "assistant", "content": "hi"}\n',
+            b"",
+        ]
+    )
 
     mock_proc = AsyncMock()
     mock_proc.stdout = mock_stdout
@@ -39,7 +40,8 @@ async def test_agent_run_stream_success(tmp_path: pytest.TempPathFactory) -> Non
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
         events = [e async for e in agent.run_stream("hello", session_id="prev")]
 
-        assert len(events) == 2
+        expected_count = 2
+        assert len(events) == expected_count
         assert isinstance(events[0], InitEvent)
         assert isinstance(events[1], MessageEvent)
         mock_exec.assert_called_once()
@@ -66,33 +68,33 @@ async def test_agent_run_stream_error_exit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_run_stream_limit_overrun() -> None:
+async def test_agent_run_stream_large_buffer_limit() -> None:
+    """Verify subprocess is created with a large buffer limit for big tool outputs."""
     agent = GeminiAgent(GeminiConfig())
     mock_stdout = AsyncMock()
-    # Trigger ValueError (LimitOverrunError) once, then return empty to stop
-    mock_stdout.readline = AsyncMock(side_effect=[ValueError("Limit overrun"), b""])
-    # readuntil is called in the except block
-    mock_stdout.readuntil = AsyncMock(return_value=b'{"type": "message", "role": "assistant", "content": "large"}\n')
+    mock_stdout.readline = AsyncMock(return_value=b"")
 
     mock_proc = AsyncMock()
     mock_proc.stdout = mock_stdout
     mock_proc.returncode = 0
     mock_proc.wait = AsyncMock()
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        events = [e async for e in agent.run_stream("hello")]
-        assert len(events) == 1
-        assert events[0].content == "large"
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        _ = [e async for e in agent.run_stream("hello")]
+        call_kwargs = mock_exec.call_args
+        assert call_kwargs.kwargs["limit"] == STREAM_BUFFER_LIMIT
 
 
 @pytest.mark.asyncio
 async def test_agent_run_stream_trailing_buffer() -> None:
     agent = GeminiAgent(GeminiConfig())
     mock_stdout = AsyncMock()
-    mock_stdout.readline = AsyncMock(side_effect=[
-        b'{"type": "message", "role": "assistant", "content": "trailing"}', # No newline
-        b""
-    ])
+    mock_stdout.readline = AsyncMock(
+        side_effect=[
+            b'{"type": "message", "role": "assistant", "content": "trailing"}',  # No newline
+            b"",
+        ]
+    )
 
     mock_proc = AsyncMock()
     mock_proc.stdout = mock_stdout
@@ -109,10 +111,9 @@ async def test_agent_run_stream_trailing_buffer() -> None:
 async def test_agent_run_stream_empty_trailing_buffer() -> None:
     agent = GeminiAgent(GeminiConfig())
     mock_stdout = AsyncMock()
-    mock_stdout.readline = AsyncMock(side_effect=[
-        b'{"type": "message", "role": "assistant", "content": "clean"}\n',
-        b""
-    ])
+    mock_stdout.readline = AsyncMock(
+        side_effect=[b'{"type": "message", "role": "assistant", "content": "clean"}\n', b""]
+    )
 
     mock_proc = AsyncMock()
     mock_proc.stdout = mock_stdout
@@ -129,11 +130,13 @@ async def test_agent_run_stream_empty_trailing_buffer() -> None:
 async def test_agent_run_stream_multi_chunk() -> None:
     agent = GeminiAgent(GeminiConfig())
     mock_stdout = AsyncMock()
-    mock_stdout.readline = AsyncMock(side_effect=[
-        b'{"type": "message", "role": "assistant", "content": "chunk1"}\n',
-        b'{"type": "message", "role": "assistant", "content": "chunk2"}\n',
-        b""
-    ])
+    mock_stdout.readline = AsyncMock(
+        side_effect=[
+            b'{"type": "message", "role": "assistant", "content": "chunk1"}\n',
+            b'{"type": "message", "role": "assistant", "content": "chunk2"}\n',
+            b"",
+        ]
+    )
 
     mock_proc = AsyncMock()
     mock_proc.stdout = mock_stdout
@@ -142,7 +145,8 @@ async def test_agent_run_stream_multi_chunk() -> None:
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
         events = [e async for e in agent.run_stream("hello")]
-        assert len(events) == 2
+        expected_count = 2
+        assert len(events) == expected_count
         assert events[0].content == "chunk1"
         assert events[1].content == "chunk2"
 

@@ -19,11 +19,10 @@ This file provides the foundational context and instructional mandates for worki
 
 The project follows a decoupled **Bridge Pattern**:
 
-- `src/tg_gemini/platform/telegram`: `aiogram` routers and handlers for Telegram interactions.
-- `src/tg_gemini/core/engine`: Core orchestration logic, including the throttled streaming loop.
-- `src/tg_gemini/core/agent`: `GeminiAgent` class managing the `gemini` CLI subprocess.
-- `src/tg_gemini/events`: Pydantic models for Gemini CLI `stream-json` events.
-- `src/tg_gemini/core/markdown`: Surgical Markdown-to-HTML conversion.
+- `src/tg_gemini/bot.py`: `aiogram` routers, handlers, stream orchestration, and tool display formatting.
+- `src/tg_gemini/gemini.py`: `GeminiAgent` class managing the `gemini` CLI subprocess.
+- `src/tg_gemini/events.py`: Pydantic models for Gemini CLI `stream-json` events.
+- `src/tg_gemini/markdown.py`: Surgical Markdown-to-HTML conversion for Telegram.
 - `src/tg_gemini/cli.py`: Typer-based CLI for service management.
 - `src/tg_gemini/config.py`: TOML-based configuration loading.
 
@@ -41,7 +40,7 @@ Follow this iterative cycle for all changes:
 
 1.  **Plan:** Define the implementation approach and testing strategy.
 2.  **Act:** Apply targeted changes. Use `uv add` for dependencies. Use modern Python syntax (e.g., `|` for Union types).
-3.  **Validate:** 
+3.  **Validate:**
     - Run `bash dev.sh format` to ensure style consistency.
     - Run `bash dev.sh lint` to verify type safety via `ty`.
     - Run `bash dev.sh test` to ensure **100% code coverage** and no regressions.
