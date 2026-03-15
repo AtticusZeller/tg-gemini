@@ -17,6 +17,7 @@ When a user sends a `/` command in Telegram, `tg-gemini` intercepts it to manage
 | `/delete <index\|id>` | Deletes a session from disk. | `gemini --delete-session <id>` |
 | `/model <name>` | Updates the model for the current user. | Next run uses `-m <name>`. |
 | `/status` | Displays active model and session ID. | - |
+| `/current` | Displays active model and session ID (HTML formatted). | - |
 
 ### 1.1 Index Resolution
 For commands taking an `<index>`, the middleware resolves the index based on the most recent `/list` output for that user. If the argument is not a digit, it is treated as a literal `session_id`.

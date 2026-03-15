@@ -61,7 +61,8 @@ async def cmd_start(message: Message, sessions: SessionManager) -> None:
         "/name <name> - Name the current session\n"
         "/delete <index|id> - Delete a session\n"
         "/model <name> - Switch model\n"
-        "/status - Show current status"
+        "/status - Show current status\n"
+        "/current - Show current status (detailed)"
     )
 
 
@@ -207,6 +208,18 @@ async def cmd_status(message: Message, sessions: SessionManager, config: AppConf
         f"Session: {session.session_id or 'new'}"
     )
     await message.answer(status)
+
+
+@router.message(Command("current"))
+async def cmd_current(message: Message, sessions: SessionManager, config: AppConfig) -> None:
+    if not message.from_user:
+        return
+    session = sessions.get(message.from_user.id)
+    current = (
+        f"Current Model: <code>{session.model or config.gemini.model}</code>\n"
+        f"Current Session: <code>{session.session_id or 'new'}</code>"
+    )
+    await message.answer(current, parse_mode="HTML")
 
 
 async def _throttle_update(
