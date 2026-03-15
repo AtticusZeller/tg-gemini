@@ -351,10 +351,26 @@ async def test_handle_message_flow() -> None:
         # Not assistant
         yield MessageEvent(role="user", content="hi")
         # msg 1: trigger update
-        yield MessageEvent(role="assistant", content="a" * 300)
+        yield MessageEvent(role="assistant", content="a" * 300, delta=True)
         # msg 2: skip update (diffs relative to msg 1)
-        yield MessageEvent(role="assistant", content="b")
-        yield ResultEvent(status="success")
+        yield MessageEvent(role="assistant", content="b", delta=True)
+        # Full content replacement (delta=False)
+        yield MessageEvent(role="assistant", content="final content", delta=False)
+        # Result with stats
+        from tg_gemini.events import ResultEvent, StreamStats
+        yield ResultEvent(
+            status="success",
+            stats=StreamStats(
+                total_tokens=100,
+                input_tokens=50,
+                output_tokens=50,
+                cached=0,
+                input=50,
+                duration_ms=1000,
+                tool_calls=0,
+                models={}
+            )
+        )
 
     agent.run_stream = mock_stream
     config = AppConfig(TelegramConfig(VALID_TOKEN), GeminiConfig("auto"))
@@ -407,6 +423,41 @@ async def test_handle_message_tool_use() -> None:
         await handle_message(message, sessions, agent, AppConfig(TelegramConfig(VALID_TOKEN)))
 
     assert "🔧 bash" in reply.edit_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_handle_message_tool_result() -> None:
+    user = User(id=1, is_bot=False, first_name="Test")
+    message = MagicMock(spec=Message)
+    message.from_user = user
+    message.chat = Chat(id=1, type="private")
+    message.text = "hello"
+    message.bot = MagicMock()
+
+    reply = MagicMock(spec=Message)
+    reply.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=reply)
+
+    sessions = SessionManager()
+    agent = AsyncMock()
+
+    async def mock_stream(*args: Any, **kwargs: Any) -> Any:
+        from tg_gemini.events import ToolResultEvent
+        yield ToolUseEvent(tool_name="bash", tool_id="call_1", parameters={})
+        yield ToolResultEvent(tool_id="call_1", status="success")
+        yield ToolUseEvent(tool_name="python", tool_id="call_2", parameters={})
+        yield ToolResultEvent(tool_id="call_2", status="error")
+        yield ResultEvent(status="success")
+
+    agent.run_stream = mock_stream
+
+    with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
+        await handle_message(message, sessions, agent, AppConfig(TelegramConfig(VALID_TOKEN)))
+
+    # Final UI update should have ✅ and ❌
+    final_text = reply.edit_text.call_args[0][0]
+    assert "✅ bash" in final_text
+    assert "❌ python" in final_text
 
 
 @pytest.mark.asyncio
@@ -512,8 +563,16 @@ async def test_process_stream_unhandled_event() -> None:
         yield InitEvent(session_id="id", model="m")
         # message role != assistant
         yield MessageEvent(role="user", content="u")
+        # unknown event type (will be ignored by bot logic)
+        from pydantic import BaseModel
+        class UnknownEvent(BaseModel):
+            type: str = "unknown"
+        yield UnknownEvent()  # type: ignore
         # tool use
         yield ToolUseEvent(tool_name="t", tool_id="i", parameters={})
+        # tool result with unknown tool_id (covers line 273 branch)
+        from tg_gemini.events import ToolResultEvent
+        yield ToolResultEvent(tool_id="unknown_id", status="success")
         # error
         yield ErrorEvent(severity="error", message="e")
         # result (fallthrough)

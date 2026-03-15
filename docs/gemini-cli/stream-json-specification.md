@@ -12,6 +12,21 @@ This specification is based on the following files in the `gemini-cli` repositor
 
 ---
 
+## Typical Stream Sequence
+
+When running a command like `gemini -p "Your prompt" --output-format stream-json`, the typical sequence of events is as follows:
+
+1.  **`init`**: Emitted once at the very beginning to provide session and model metadata.
+2.  **`message` (role: "user")**: Emitted once representing the initial prompt.
+3.  **Iteration (one or more turns)**:
+    -   **`message` (role: "assistant", delta: true)**: Multiple events as the model streams its text response.
+    -   **`tool_use`**: If the model decides to use a tool, this event describes the tool and parameters.
+    -   **`tool_result`**: Emitted after the tool execution completes, correlating via `tool_id`.
+    -   *If tools were used, the loop repeats for the next model turn.*
+4.  **`result`**: Emitted once at the very end, containing final status and aggregated usage statistics.
+
+---
+
 ## Base Event Structure
 
 Every event in the stream follows this base structure:

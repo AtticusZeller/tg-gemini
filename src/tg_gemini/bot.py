@@ -9,7 +9,14 @@ from aiogram.types import Message
 from aiogram.utils.chat_action import ChatActionSender
 
 from tg_gemini.config import MODEL_ALIASES, AppConfig
-from tg_gemini.events import ErrorEvent, InitEvent, MessageEvent, ToolUseEvent
+from tg_gemini.events import (
+    ErrorEvent,
+    InitEvent,
+    MessageEvent,
+    ResultEvent,
+    ToolResultEvent,
+    ToolUseEvent,
+)
 from tg_gemini.gemini import GeminiAgent, SessionInfo
 from tg_gemini.markdown import md_to_telegram_html
 
@@ -238,6 +245,9 @@ async def _process_stream(
 
     reply = await message.answer("Thinking...")
 
+    # Map tool_id to its index in status_lines
+    active_tools: dict[str, int] = {}
+
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         async for event in agent.run_stream(message.text or "", session.session_id, session.model):
             if isinstance(event, InitEvent):
@@ -247,16 +257,34 @@ async def _process_stream(
                     session.pending_name = None
             elif isinstance(event, MessageEvent):
                 if event.role == "assistant":
-                    accumulated += event.content
+                    if event.delta:
+                        accumulated += event.content
+                    else:
+                        accumulated = event.content
                     last_update_time, last_update_len = await _throttle_update(
                         reply, accumulated, status_lines, last_update_time, last_update_len
                     )
             elif isinstance(event, ToolUseEvent):
+                active_tools[event.tool_id] = len(status_lines)
                 status_lines.append(f"🔧 {event.tool_name}")
                 await _update_ui(reply, accumulated, status_lines)
+            elif isinstance(event, ToolResultEvent):
+                if event.tool_id in active_tools:
+                    idx = active_tools[event.tool_id]
+                    icon = "✅" if event.status == "success" else "❌"
+                    # Update the existing line
+                    tool_name = status_lines[idx].split(" ", 1)[1]
+                    status_lines[idx] = f"{icon} {tool_name}"
+                    await _update_ui(reply, accumulated, status_lines)
             elif isinstance(event, ErrorEvent):
                 await reply.edit_text(f"Error: {event.message}")
                 return "", []
+            elif isinstance(event, ResultEvent) and event.stats:
+                # Add a footer with token info
+                s = event.stats
+                status_lines.append(
+                    f"\n<i>({s.total_tokens} tokens, {s.duration_ms/1000:.1f}s)</i>"
+                )
 
     if accumulated or status_lines:
         await _update_ui(reply, accumulated, status_lines)
