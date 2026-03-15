@@ -7,7 +7,7 @@ show_help() {
     echo ""
     echo "Commands:"
     echo "  format   Run code formatting (Ruff)"
-    echo "  lint     Run linters and type checking (Ruff, MyPy)"
+    echo "  lint     Run linters and type checking (Ruff, ty)"
     echo "  test     Run tests with coverage (Pytest)"
     echo "  docs     Manage documentation (dev, build, deploy)"
     echo "  bump     Bump version and update changelog"
@@ -29,7 +29,7 @@ run_format() {
 run_lint() {
     echo "running linter..."
     set -x
-    mypy src                # type check
+    ty check src            # type check
     ruff check src          # linter
     ruff format src --check # formatter check
     set +x

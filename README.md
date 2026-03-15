@@ -1,122 +1,64 @@
-# TG Gemini
+# tg-gemini
 
-<div align="center">
+Lightweight Telegram-Gemini CLI middleware. Receive Telegram messages, forward them to `gemini` CLI in headless `stream-json` mode, and stream responses back with rich HTML formatting.
 
-[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+## 🚀 Features
 
-[![Versions](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12%20-green.svg)](https://github.com/atticuszeller/tg-gemini)
+- **Pure Async Architecture:** Built with `aiogram 3.x` and `asyncio` for high performance.
+- **Direct CLI Integration:** No complex abstractions; it wraps the [Gemini CLI](https://github.com/google-gemini/gemini-cli) directly using its headless mode.
+- **Streaming Responses:** Real-time updates in Telegram as Gemini thinks and acts.
+- **Smart Markdown-to-HTML:** Surgical conversion of Markdown/Obsidian syntax to Telegram-compatible HTML.
+- **Session Persistence:** Native Gemini CLI session resumption support.
+- **Modern Tooling:** Managed by `uv`, strictly typed with `ty`, and linted with `ruff`.
 
-[![Test](https://github.com/atticuszeller/tg-gemini/actions/workflows/main.yml/badge.svg)](https://github.com/atticuszeller/tg-gemini/actions/workflows/main.yml)
-[![Coverage](https://codecov.io/gh/atticuszeller/tg-gemini/branch/main/graph/badge.svg?token=YOUR_TOKEN)](https://github.com/atticuszeller/tg-gemini/actions/workflows/main.yml)
+## 🛠️ Prerequisites
 
-<!-- [![Docker](https://github.com/atticuszeller/tg-gemini/actions/workflows/docker.yml/badge.svg)](https://github.com/atticuszeller/tg-gemini/actions/workflows/docker.yml) -->
+- **Python:** >= 3.11
+- **uv:** [Package manager](https://github.com/astral-sh/uv)
+- **Gemini CLI:** Installed and available in your `PATH`
+- **Telegram Bot Token:** From [@BotFather](https://t.me/BotFather)
 
-</div>
-
-## Feature
-
-### CI/CD
-
-1. publish your package to pypi
-2. test matrix
-3. mkdocs-material
-
-mkdocs deps
+## 📦 Installation
 
 ```bash
-uv add mkdocs-material pymdown-extensions mkdocs-glightbox mkdocs-git-revision-date-localized-plugin mkdocs-obsidian-bridge mkdocs-publisher --optional mkdocs
+git clone https://github.com/atticuszeller/tg-gemini.git
+cd tg-gemini
+uv sync --all-groups
 ```
 
-### pre-commit
+## ⚙️ Configuration
 
-1. basic `pre-commit-hooks`
-2. `codespell check`
-3. `ruff-pre-commit`
-
-### Lint and Format with Ruff
+Create a config file at `config.toml`:
 
 ```toml
-[tool.ruff]
-# cover and extend the default config in https://docs.astral.sh/ruff/configuration/
-extend-exclude = [""]
-target-version = "py310"
+[telegram]
+bot_token = "123456:ABC-DEF..."
+allowed_user_ids = [123456789]  # Optional: whitelist of user IDs
 
-[tool.ruff.lint]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # pyflakes
-    "I",      # isort
-    "B",      # flake8-bugbear
-    "C4",     # flake8-comprehensions
-    "UP",     # pyupgrade
-    "ARG001", # unused arguments in functions
-]
-ignore = [
-    "E501",   # line too long, handled by black
-    "B008",   # do not perform function calls in argument defaults
-    "W191",   # indentation contains tabs
-    "B904",   # Allow raising exceptions without from e, for HTTPException
-    "COM819", # Trailing comma prohibited
-    "D100",   # Missing docstring in public module(file)
-    "D104",   # Missing docstring in public package
-    "D203",   # 1 blank line required before class docstring
-    "E201",   # Whitespace after '('
-    "E202",   # Whitespace before ')'
-    "E203",   # Whitespace before ':'
-    "E221",   # Multiple spaces before operator
-    "E241",   # Multiple spaces after ','
-    "E251",   # Unexpected spaces around keyword / parameter equals
-    "W291",   # Trailing whitespace
-    "W293",   # Blank line contains whitespace
-]
-
-isort = { combine-as-imports = true , split-on-trailing-comma = false }
-
-# Avoid trying to fix flake8-bugbear (`B`) violations.
-unfixable = ["B"]
-
-[tool.ruff.format]
-docstring-code-format = true
-skip-magic-trailing-comma = true
+[gemini]
+model = "auto"             # auto | pro | flash | flash-lite | concrete-name
+approval_mode = "default"  # default | auto_edit | yolo
+working_dir = "."          # Directory where Gemini CLI executes
 ```
 
-### Mypy and Pytest
+## 📖 Documentation
 
-```toml
-[tool.pytest.ini_options]
-# Set additional command line options for pytest:
-# -r: show extra test summary info
-# X: show extra info on xfailed tests
-# s: don't capture stdout (allow print statements)
-# --strict-config: any warnings about configuration are treated as errors
-# --strict-markers: treat unregistered markers as errors
-addopts = "-rXs --strict-config --strict-markers"
-xfail_strict = true         # Treat tests that are marked as xfail but pass as test failures
-filterwarnings = ["error"]  # Treat all warnings as errors
+- [**Architecture**](docs/architecture.md): System design and component layers.
+- [**Command Mapping**](docs/commands.md): Telegram commands and Gemini CLI flags.
+- [**Format Conversion**](docs/formatting.md): Markdown-to-HTML strategy.
+- [**Development Guide**](docs/development.md): Tech stack, testing, and quality standards.
 
-[tool.coverage.report]
-fail_under = 100
-show_missing = true
-skip_covered = true
+## 🧪 Development
+
+All development workflows are managed via `dev.sh`:
+
+```bash
+bash dev.sh format    # Format code with Ruff
+bash dev.sh lint      # Type check (ty) and Lint (Ruff)
+bash dev.sh test      # Run tests with 100% coverage enforcement
+bash dev.sh check     # Full pre-commit pipeline
 ```
 
-todo：codecov ci and replace coverage with it
+## 📄 License
 
-### git-cliff
-
-We follow a specific format for commit messages to maintain a clear and organized project history.
-with `git-cliff` default config
-
-* `feat:` New features or enhancements
-* `fix:` Bug fixes
-* `doc:` Documentation updates
-* `perf:` Performance improvements
-* `refactor:` Code refactoring without adding features or fixing bugs
-* `style:` Code style changes (formatting, missing semi-colons, etc.)
-* `test:` Adding or modifying tests
-* `chore:` Routine tasks, maintenance, or tooling changes
-* `revert:` Reverting a previous commit
-
-### copier
+MIT © [A.J.Zeller](https://github.com/atticuszeller)

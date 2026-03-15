@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync:*)",
+      "Bash(bash dev.sh test 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run coverage run --source=src -m pytest -rXs --tb=short 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run coverage report --show-missing 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run coverage run --source=src -m pytest -rXs --tb=short 2>&1 && uv run coverage report --show-missing 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run mypy src 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run ruff check src tests 2>&1 && uv run ruff format src tests --check 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run ruff check src tests --fix 2>&1 && uv run ruff format src tests 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run ruff check src tests 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run ruff format src tests --check 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run ruff format src tests 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run mypy src 2>&1 && uv run ruff check src tests 2>&1 && uv run ruff format src tests --check 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run ruff format src/tg_gemini/cli.py 2>&1 && uv run coverage run --source=src -m pytest -rXs --tb=short 2>&1 && uv run coverage report --show-missing 2>&1)",
+      "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run ruff check src tests --fix 2>&1 && uv run ruff format src tests 2>&1 && uv run mypy src 2>&1)",
+      "Bash(uv run:*)",
+      "Bash(bash dev.sh check)",
+      "Bash(bash dev.sh lint && bash dev.sh test)"
+    ]
+  }
+}
