@@ -11,9 +11,8 @@ When a user sends a `/` command in Telegram, `tg-gemini` intercepts it to manage
 | `/start` | Welcome message and command list. | - |
 | `/new [name]` | Clears the current `session_id`. Optionally sets a pending name. | Next run skips the `-r` flag. |
 | `/list` | Lists available sessions for the project. | `gemini --list-sessions` |
-| `/switch <index\|id>` | Switches to a specific session. | Updates internal state; next run uses `-r <id>`. |
 | `/name <name>` | Sets a custom name for the current session. | Stored in middleware memory; shown in `/list`. |
-| `/resume [index\|id]` | Resumes a session. | If no arg, uses `-r latest`. If arg, same as `/switch`. |
+| `/resume [index\|id]` | Resumes a specific or the latest session. | If no arg, uses `-r latest`. If arg, uses `-r <id>`. |
 | `/delete <index\|id>` | Deletes a session from disk. | `gemini --delete-session <id>` |
 | `/model <name>` | Updates the model for the current user. | Next run uses `-m <name>`. |
 | `/status` | Displays active model and session ID. | - |

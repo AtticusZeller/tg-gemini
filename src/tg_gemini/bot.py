@@ -57,7 +57,7 @@ async def cmd_start(message: Message, sessions: SessionManager) -> None:
         "Commands:\n"
         "/new [name] - Start a new session (with optional name)\n"
         "/list - List available sessions\n"
-        "/switch <index|id> - Switch to a session\n"
+        "/resume [index|id] - Resume a specific or the latest session\n"
         "/name <name> - Name the current session\n"
         "/delete <index|id> - Delete a session\n"
         "/model <name> - Switch model\n"
@@ -90,7 +90,7 @@ async def _format_session_list(
         marker = "▶" if s.session_id == active_id else "◻"
         title = custom_names.get(s.session_id, s.title)
         lines.append(f"{s.index}. {marker} {title} ({s.time})")
-    lines.append("\nUse `/switch <index>` to change session.")
+    lines.append("\nUse `/resume <index>` to change session.")
     return "\n".join(lines)
 
 
@@ -113,20 +113,6 @@ def _resolve_id(arg: str, last_sessions: list[SessionInfo]) -> str:
             if s.index == idx:
                 return s.session_id
     return arg
-
-
-@router.message(Command("switch"))
-async def cmd_switch(message: Message, command: CommandObject, sessions: SessionManager) -> None:
-    if not message.from_user:
-        return
-    if not command.args:
-        await message.answer("Usage: /switch <index|id>")
-        return
-
-    session = sessions.get(message.from_user.id)
-    target_id = _resolve_id(command.args, session.last_sessions)
-    session.session_id = target_id
-    await message.answer(f"Switched to session: <code>{target_id}</code>", parse_mode="HTML")
 
 
 @router.message(Command("name"))

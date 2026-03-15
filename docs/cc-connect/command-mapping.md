@@ -10,7 +10,7 @@ When a user sends a `/` command in Telegram, `cc-connect` intercepts it before f
 | :--- | :--- | :--- |
 | `/new [name]` | `cmdNew` | Terminates the current process; next message starts a new one (without `--resume`). |
 | `/list` | `cmdList` | Calls `Agent.ListSessions()`, which reads `~/.gemini/tmp/<slug>/chats/`. |
-| `/switch <id>` | `cmdSwitch` | Terminates the current process; next message starts with `--resume <id>`. |
+| `/resume <id>` | `cmdResume` | Terminates the current process; next message starts with `--resume <id>`. |
 | `/name <name>` | `cmdName` | Updates the session metadata in `cc-connect`'s local session store. |
 | `/current` | `cmdCurrent` | Returns the current active `SessionKey` and `AgentSessionID`. |
 | `/model [name]` | `cmdModel` | Updates the `Agent.model` field. Next process launch will use `-m <name>`. |
