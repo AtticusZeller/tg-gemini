@@ -54,7 +54,17 @@ class GeminiAgent:
             return
 
         if proc.stdout:
-            async for line in proc.stdout:
+            while True:
+                try:
+                    line = await proc.stdout.readline()
+                except ValueError:  # LimitOverrunError (inherited from ValueError in readline)
+                    # Read until newline manually if limit exceeded
+                    # This happens for very large JSON objects
+                    chunk = await proc.stdout.readuntil(b"\n")
+                    line = chunk
+                
+                if not line:
+                    break
                 event = self._parse_line(line.decode())
                 if event:
                     yield event

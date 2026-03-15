@@ -610,8 +610,41 @@ async def test_update_ui_exception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_ui_empty_chunks() -> None:
+    reply = MagicMock()
+    # Mock md_to_telegram_html to return something that split_message_code_fence_aware
+    # might return empty for (unlikely but for branch coverage)
+    with (
+        patch("tg_gemini.bot.md_to_telegram_html", return_value=""),
+        patch("tg_gemini.bot.split_message_code_fence_aware", return_value=[]),
+    ):
+        await _update_ui(reply, "some text", [])
+        reply.edit_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_ui_multi_chunk() -> None:
+    reply = MagicMock()
+    reply.edit_text = AsyncMock()
+    reply.answer = AsyncMock()
+    reply.bot = MagicMock()
+    
+    with (
+        patch("tg_gemini.bot.md_to_telegram_html", return_value="full html"),
+        patch("tg_gemini.bot.split_message_code_fence_aware", return_value=["chunk1", "chunk2"]),
+    ):
+        await _update_ui(reply, "text", [])
+        reply.edit_text.assert_called_once_with("chunk1", parse_mode="HTML")
+        reply.answer.assert_called_once_with("chunk2", parse_mode="HTML")
+
+
+@pytest.mark.asyncio
 async def test_start_bot() -> None:
     config = AppConfig(TelegramConfig(VALID_TOKEN), GeminiConfig("auto"))
-    with patch("tg_gemini.bot.Dispatcher.start_polling", new_callable=AsyncMock) as mock_poll:
+    with (
+        patch("tg_gemini.bot.Dispatcher.start_polling", new_callable=AsyncMock) as mock_poll,
+        patch("tg_gemini.bot.Bot.set_my_commands", new_callable=AsyncMock) as mock_cmd,
+    ):
         await start_bot(config)
         mock_poll.assert_called_once()
+        mock_cmd.assert_called_once()

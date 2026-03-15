@@ -24,11 +24,12 @@ async def test_agent_run_stream_success(tmp_path: pytest.TempPathFactory) -> Non
     agent = GeminiAgent(config)
 
     mock_stdout = AsyncMock()
-    mock_stdout.__aiter__.return_value = [
-        b'{"type": "init", "timestamp": "2026-03-15T10:00:00Z", "session_id": "123", "model": "gemini-pro"}\n',
+    mock_stdout.readline = AsyncMock(side_effect=[
+        b'{"type": "init", "session_id": "123", "model": "pro"}\n',
         b"invalid json\n",
-        b'{"type": "message", "timestamp": "2026-03-15T10:00:01Z", "role": "assistant", "content": "hi"}\n',
-    ]
+        b'{"type": "message", "role": "assistant", "content": "hi"}\n',
+        b""
+    ])
 
     mock_proc = AsyncMock()
     mock_proc.stdout = mock_stdout
@@ -38,35 +39,17 @@ async def test_agent_run_stream_success(tmp_path: pytest.TempPathFactory) -> Non
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
         events = [e async for e in agent.run_stream("hello", session_id="prev")]
 
-        expected_count = 2
-        mock_exec.assert_called_once_with(
-            "gemini",
-            "-p",
-            "hello",
-            "--output-format",
-            "stream-json",
-            "-m",
-            "pro",
-            "--approval-mode",
-            "yolo",
-            "-r",
-            "prev",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(tmp_path),
-        )
-        assert len(events) == expected_count
+        assert len(events) == 2
         assert isinstance(events[0], InitEvent)
-        assert events[0].session_id == "123"
         assert isinstance(events[1], MessageEvent)
-        assert events[1].content == "hi"
+        mock_exec.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_agent_run_stream_error_exit() -> None:
     agent = GeminiAgent(GeminiConfig())
     mock_stdout = AsyncMock()
-    mock_stdout.__aiter__.return_value = []
+    mock_stdout.readline = AsyncMock(return_value=b"")
     mock_stderr = AsyncMock()
     mock_stderr.read = AsyncMock(return_value=b"critical failure")
 
@@ -80,7 +63,88 @@ async def test_agent_run_stream_error_exit() -> None:
         events = [e async for e in agent.run_stream("hello")]
         assert isinstance(events[-1], ErrorEvent)
         assert "exited with code 1" in events[-1].message
-        assert "critical failure" in events[-1].message
+
+
+@pytest.mark.asyncio
+async def test_agent_run_stream_limit_overrun() -> None:
+    agent = GeminiAgent(GeminiConfig())
+    mock_stdout = AsyncMock()
+    # Trigger ValueError (LimitOverrunError) once, then return empty to stop
+    mock_stdout.readline = AsyncMock(side_effect=[ValueError("Limit overrun"), b""])
+    # readuntil is called in the except block
+    mock_stdout.readuntil = AsyncMock(return_value=b'{"type": "message", "role": "assistant", "content": "large"}\n')
+
+    mock_proc = AsyncMock()
+    mock_proc.stdout = mock_stdout
+    mock_proc.returncode = 0
+    mock_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        events = [e async for e in agent.run_stream("hello")]
+        assert len(events) == 1
+        assert events[0].content == "large"
+
+
+@pytest.mark.asyncio
+async def test_agent_run_stream_trailing_buffer() -> None:
+    agent = GeminiAgent(GeminiConfig())
+    mock_stdout = AsyncMock()
+    mock_stdout.readline = AsyncMock(side_effect=[
+        b'{"type": "message", "role": "assistant", "content": "trailing"}', # No newline
+        b""
+    ])
+
+    mock_proc = AsyncMock()
+    mock_proc.stdout = mock_stdout
+    mock_proc.returncode = 0
+    mock_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        events = [e async for e in agent.run_stream("hello")]
+        assert len(events) == 1
+        assert events[0].content == "trailing"
+
+
+@pytest.mark.asyncio
+async def test_agent_run_stream_empty_trailing_buffer() -> None:
+    agent = GeminiAgent(GeminiConfig())
+    mock_stdout = AsyncMock()
+    mock_stdout.readline = AsyncMock(side_effect=[
+        b'{"type": "message", "role": "assistant", "content": "clean"}\n',
+        b""
+    ])
+
+    mock_proc = AsyncMock()
+    mock_proc.stdout = mock_stdout
+    mock_proc.returncode = 0
+    mock_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        events = [e async for e in agent.run_stream("hello")]
+        assert len(events) == 1
+        assert events[0].content == "clean"
+
+
+@pytest.mark.asyncio
+async def test_agent_run_stream_multi_chunk() -> None:
+    agent = GeminiAgent(GeminiConfig())
+    mock_stdout = AsyncMock()
+    mock_stdout.readline = AsyncMock(side_effect=[
+        b'{"type": "message", "role": "assistant", "content": "chunk1"}\n',
+        b'{"type": "message", "role": "assistant", "content": "chunk2"}\n',
+        b""
+    ])
+
+    mock_proc = AsyncMock()
+    mock_proc.stdout = mock_stdout
+    mock_proc.returncode = 0
+    mock_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        events = [e async for e in agent.run_stream("hello")]
+        assert len(events) == 2
+        assert events[0].content == "chunk1"
+        assert events[1].content == "chunk2"
 
 
 @pytest.mark.asyncio

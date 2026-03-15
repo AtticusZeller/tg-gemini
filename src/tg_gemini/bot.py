@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import BotCommand, Message
 from aiogram.utils.chat_action import ChatActionSender
 
 from tg_gemini.config import MODEL_ALIASES, AppConfig
@@ -18,7 +18,7 @@ from tg_gemini.events import (
     ToolUseEvent,
 )
 from tg_gemini.gemini import GeminiAgent, SessionInfo
-from tg_gemini.markdown import md_to_telegram_html
+from tg_gemini.markdown import md_to_telegram_html, split_message_code_fence_aware
 
 TELEGRAM_MAX_LENGTH = 4096
 UPDATE_INTERVAL = 1.5
@@ -321,12 +321,43 @@ async def _update_ui(reply: Message, accumulated: str, status_lines: list[str]) 
     if not text:
         text = "Thinking..."
 
+    html_full = md_to_telegram_html(text)
+    chunks = split_message_code_fence_aware(html_full, max_len=TELEGRAM_MAX_LENGTH)
+
+    if not chunks:
+        return
+
+    # Update the first message
     with contextlib.suppress(Exception):
-        await reply.edit_text(md_to_telegram_html(text), parse_mode="HTML")
+        await reply.edit_text(chunks[0], parse_mode="HTML")
+
+    # If there are more chunks, send them as new messages
+    # Note: In a real streaming scenario, we'd need to track these extra messages
+    # but for now we just send them at the end or when they appear.
+    # For simplicity during streaming, we only edit the first one.
+    # The final call to _update_ui after the loop will send all of them.
+    if len(chunks) > 1 and reply.bot:
+        for chunk in chunks[1:]:
+            with contextlib.suppress(Exception):
+                await reply.answer(chunk, parse_mode="HTML")
 
 
 async def start_bot(config: AppConfig) -> None:
     bot = Bot(token=config.telegram.bot_token)
+    
+    # Initialize bot commands
+    commands = [
+        BotCommand(command="start", description="Welcome and help"),
+        BotCommand(command="new", description="Start a new session"),
+        BotCommand(command="list", description="List your sessions"),
+        BotCommand(command="resume", description="Resume a session"),
+        BotCommand(command="name", description="Name the current session"),
+        BotCommand(command="current", description="Show current status"),
+        BotCommand(command="model", description="Switch Gemini model"),
+        BotCommand(command="delete", description="Delete a session"),
+    ]
+    await bot.set_my_commands(commands)
+
     dp = Dispatcher()
     dp.include_router(router)
 
