@@ -269,7 +269,7 @@ class Engine:
             while True:
                 try:
                     event = await asyncio.wait_for(
-                        gemini_session.events.get(), timeout=120
+                        gemini_session.events.get(), timeout=300
                     )
                 except TimeoutError:
                     logger.error("Engine: gemini session timed out")
