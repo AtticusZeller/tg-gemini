@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.9 - 2026-03-22
+
+### 🐛 Bug Fixes
+
+- *(engine)* Normalize skill names for Telegram command menu
+
 ## 0.0.8 - 2026-03-22
 
 ### 🐛 Bug Fixes
