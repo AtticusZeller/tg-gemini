@@ -1,35 +1,29 @@
 [build-system]
-requires      = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.version]
-path = "src/tg_gemini/__init__.py"
-# FROM: https://hatch.pypa.io/latest/version/
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/tg_gemini"]
-# FROM: https://hatch.pypa.io/latest/build/
+requires      = ["uv_build>=0.7.0,<0.8"]
+build-backend = "uv_build"
 
 [project]
-name = "tg-gemini"
-description = "python template package"
-classifiers = [
+name            = "tg-gemini"
+version         = "0.0.0"
+description     = "Telegram bot middleware bridging Gemini CLI headless mode"
+readme          = "README.md"
+requires-python = ">=3.12"
+license         = { file = "LICENSE" }
+authors         = [{ name = "A.J.Zeller", email = "hello@atticux.me" }]
+maintainers     = [{ name = "A.J.Zeller", email = "hello@atticux.me" }]
+classifiers     = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-] # FROM: https://pypi.org/classifiers/
-readme = "README.md"
-requires-python = ">=3.10"
-license = { file = "LICENSE" }
-authors = [{ name = "A.J.Zeller", email = "hello@atticux.me" }]
-maintainers = [{ name = "A.J.Zeller", email = "hello@atticux.me" }]
-
-dynamic = ["version"] # https://hatch.pypa.io/latest/config/metadata/#version
+]
+dependencies = [
+    "python-telegram-bot>=21.0",
+    "pydantic>=2.0",
+    "typer>=0.12",
+    "loguru>=0.7",
+]
 
 [project.urls]
 Homepage      = "https://github.com/atticuszeller/tg-gemini"
@@ -37,21 +31,21 @@ Issues        = "https://github.com/atticuszeller/tg-gemini/issues"
 documentation = "https://atticuszeller.github.io/tg-gemini/"
 Changelog     = "https://github.com/atticuszeller/tg-gemini/blob/main/CHANGELOG.md"
 
-[project.scripts] # build-backend config needed
-tg-gemini = "tg_gemini:main" # equal to from python import main; then run main()
-# FROM: https://packaging.python.org/en/latest/guides/writing-pyproject-toml/
-
-[project.optional-dependencies]
-# optional deps for package installation
+[project.scripts]
+tg-gemini = "tg_gemini.cli:app"
 
 [dependency-groups]
-dev = [
-    "ruff>=0.6.3",
-    "mypy>=1.11.2",
-    "pre-commit>=3.8.0",
+lint = ["ty>=0.0.0", "ruff>=0.9.0"]
+test = [
     "pytest>=8.3.2",
+    "pytest-asyncio>=0.23",
     "pytest-sugar>=1.0.0",
-    "coverage>=7.6.1",
+    "coverage[toml]>=7.6.1",
+]
+dev = [
+    { include-group = "lint" },
+    { include-group = "test" },
+    "pre-commit>=3.8.0",
     "git-cliff>=2.6.1",
     "bump-my-version>=0.28.0",
     "typos>=1.26.8",
@@ -65,18 +59,17 @@ docs = [
     "pymdown-extensions>=10.11.1",
 ]
 
-## Test
-[tool.mypy]
-strict  = true
-exclude = ["venv", ".venv"]
+## Type checker
+[tool.ty.environment]
+python-version = "3.12"
 
+## Test
 [tool.pytest.ini_options]
-# Set additional command line options for pytest
-# Ref: https://docs.pytest.org/en/stable/reference/reference.html#command-line-flags
 addopts        = "-rXs --strict-config --strict-markers --tb=short"
-xfail_strict   = true                                               # Treat tests that are marked as xfail but pass as test failures
-filterwarnings = ["error"]                                          # Treat all warnings as errors
+xfail_strict   = true
+filterwarnings = ["error"]
 pythonpath     = "src"
+asyncio_mode   = "auto"
 
 [tool.coverage.run]
 branch = true
@@ -84,13 +77,14 @@ branch = true
 [tool.coverage.report]
 skip_covered = true
 show_missing = true
-precision = 2
+precision    = 2
+fail_under   = 95
 exclude_lines = [
     'def __repr__',
-    'pragma= no cover',
+    'pragma: no cover',
     'raise NotImplementedError',
-    'if TYPE_CHECKING=',
-    'if typing.TYPE_CHECKING=',
+    'if TYPE_CHECKING',
+    'if typing.TYPE_CHECKING',
     '@overload',
     '@typing.overload',
     '\(Protocol\)=$',
@@ -101,36 +95,59 @@ exclude_lines = [
 
 ## Linter and formatter
 [tool.ruff]
-# cover and extend the default config in https=//docs.astral.sh/ruff/configuration/
-extend-exclude = [""]
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # pyflakes
-    "I",      # isort
-    "B",      # flake8-bugbear
-    "C4",     # flake8-comprehensions
-    "UP",     # pyupgrade
-    "ARG001", # unused arguments in functions
+select = ["ALL"]
+ignore = [
+    "D",       # pydocstyle — docstrings not enforced
+    "ANN",     # flake8-annotations — not enforcing explicit annotations everywhere
+    "COM812",  # missing-trailing-comma — conflicts with formatter
+    "ISC001",  # single-line-implicit-string-concatenation — conflicts with formatter
+    "EM",      # flake8-errmsg — not needed
+    "TRY003",  # raise-vanilla-args — long messages in raise are fine
+    "FBT",     # flake8-boolean-trap — bool args are fine here
+    "S101",    # assert — used in tests
+    "S603",    # subprocess-without-shell-equals-true — we call gemini subprocess
+    "S607",    # start-process-with-partial-path — we call `gemini` by name
+    "BLE001",  # blind-exception — we catch Exception broadly in some places
+    "SLF001",  # private-member-access — tests access private members
+    "ERA001",  # commented-out-code
+    "E501",    # line-too-long — not enforced
+    "PLC0415", # import-outside-toplevel — TYPE_CHECKING imports
+    "C901",    # complex-structure
+    "PLR0912", # too-many-branches
+    "PLR0913", # too-many-arguments
+    "PLR0915", # too-many-statements
+    "PLR2004", # magic-value-comparison
+    "PT011",   # pytest-raises-too-broad
+    "PT013",   # pytest-incorrect-pytest-import
+    "TD",      # flake8-todos
+    "FIX",     # flake8-fixme
+    "T201",    # print — we use loguru
+    "RUF012",  # mutable-class-attributes — false positives with pydantic
+    "INP001",  # implicit-namespace-package — tests/ is not a package
+    "S105",    # hardcoded-password-string — mock tokens in tests
+    "S106",    # hardcoded-password-func-arg — mock tokens in tests
+    "S108",    # probable-insecure-usage-of-temp-file — legitimate tempfile use
+    "S110",    # try-except-pass — intentional silent suppress
+    "RUF001",  # ambiguous-unicode-character — appears in markdown test strings
+    "ASYNC240", # async-blocking-open — we use asyncio not trio/anyio; sync IO for small files is fine
+    "RUF006",  # asyncio-dangling-task — fire-and-forget tasks are intentional
+    "TRY301",  # raise-within-try — useful in tests
+    "TRY002",  # raise-without-from-inside-except — base Exception ok in test stubs
+    "TRY300",  # try-consider-else — return-in-try is acceptable
+    "PLR0911", # too-many-return-statements
+    "RUF059",  # unused-unpacked-variable — `_` prefix convention handled elsewhere
+    "ASYNC110", # asyncio-sleep-in-while-loop — intentional polling for bot lifecycle
 ]
 
-isort = { combine-as-imports = true, split-on-trailing-comma = false }
-
-# Avoid trying to fix flake8-bugbear (`B`) violations.
-unfixable = ["B"]
+isort    = { combine-as-imports = true, split-on-trailing-comma = false }
+unfixable = ["B"]  # never auto-fix flake8-bugbear
 
 [tool.ruff.format]
 docstring-code-format     = true
 skip-magic-trailing-comma = true
-
-# Reference
-# 1. https=//github.com/Kludex/python-template/blob/main/template/%7B%7B%20project_slug%20%7D%7D/pyproject.toml.jinja
-# 2. https=//github.com/fastapi/full-stack-fastapi-template/blob/master/backend/pyproject.toml
-# 3. https=//github.com/pydantic/logfire
-# 4. https=//coverage.readthedocs.io/en/latest/index.html
 
 ## VCS
 [tool.git-cliff.remote.github]
@@ -138,13 +155,10 @@ owner = "atticuszeller"
 repo  = "tg-gemini"
 
 [tool.git-cliff.changelog]
-# template for the changelog header
 header = """
 # Changelog\n
 All notable changes to this project will be documented in this file.\n
 """
-# template for the changelog body
-# https://keats.github.io/tera/docs/#introduction
 body = """
 {% if version %}\
     ## {{ version | trim_start_matches(pat="v") }} - {{ timestamp | date(format="%Y-%m-%d") }}
@@ -161,56 +175,39 @@ body = """
     {% endfor %}
 {% endfor %}\n
 """
-# template for the changelog footer
 footer = """
 <!-- generated by git-cliff -->
 """
-# remove the leading and trailings
-trim = true
-# postprocessors
-# postprocessors = [
-#   { pattern = '<REPO>', replace = "https://github.com/atticuszeller/tg-gemini" }, # replace repository URL
-# ]
-# render body even when there are no releases to process
+trim         = true
 render_always = true
-# output file path
-output = "CHANGELOG.md"
+output       = "CHANGELOG.md"
 
 [tool.git-cliff.git]
-# parse the commits based on https://www.conventionalcommits.org
-conventional_commits = true
-# filter out the commits that are not conventional
+conventional_commits  = true
 filter_unconventional = true
-# process each line of a commit as an individual commit
-split_commits = false
-# regex for preprocessing the commit messages
-commit_preprocessors = [
-    # If the spelling is incorrect, it will be automatically fixed.
+split_commits         = false
+commit_preprocessors  = [
     { pattern = '.*', replace_command = 'typos --write-changes -' },
 ]
-# regex for parsing and grouping commits
 commit_parsers = [
-    { message = "^feat", group = "<!-- 0 -->🚀 Features" },
-    { message = "^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
-    { message = "^doc", group = "<!-- 3 -->📚 Documentation" },
-    { message = "^perf", group = "<!-- 4 -->⚡ Performance" },
-    { message = "^refactor", group = "<!-- 2 -->🚜 Refactor" },
-    { message = "^style", group = "<!-- 5 -->🎨 Styling" },
-    { message = "^test", group = "<!-- 6 -->🧪 Testing" },
+    { message = "^feat",              group = "<!-- 0 -->🚀 Features" },
+    { message = "^fix",               group = "<!-- 1 -->🐛 Bug Fixes" },
+    { message = "^doc",               group = "<!-- 3 -->📚 Documentation" },
+    { message = "^perf",              group = "<!-- 4 -->⚡ Performance" },
+    { message = "^refactor",          group = "<!-- 2 -->🚜 Refactor" },
+    { message = "^style",             group = "<!-- 5 -->🎨 Styling" },
+    { message = "^test",              group = "<!-- 6 -->🧪 Testing" },
     { message = "^chore\\(release\\)", skip = true },
-    { message = "^chore\\(deps.*\\)", skip = true },
-    { message = "^chore\\(pr\\)", skip = true },
-    { message = "^chore\\(pull\\)", skip = true },
-    { message = "^chore|^ci", group = "<!-- 7 -->⚙️ Miscellaneous Tasks" },
-    { body = ".*security", group = "<!-- 8 -->🛡️ Security" },
-    { message = "^revert", group = "<!-- 9 -->◀️ Revert" },
+    { message = "^chore\\(deps.*\\)",  skip = true },
+    { message = "^chore\\(pr\\)",      skip = true },
+    { message = "^chore\\(pull\\)",    skip = true },
+    { message = "^chore|^ci",          group = "<!-- 7 -->⚙️ Miscellaneous Tasks" },
+    { body = ".*security",             group = "<!-- 8 -->🛡️ Security" },
+    { message = "^revert",             group = "<!-- 9 -->◀️ Revert" },
 ]
-# filter out the commits that are not matched by commit parsers
 filter_commits = false
-# sort the tags topologically
-topo_order = false
-# sort the commits inside sections by oldest/newest order
-sort_commits = "oldest"
+topo_order     = false
+sort_commits   = "oldest"
 
 [tool.bumpversion]
 current_version        = "0.0.0"
@@ -225,7 +222,7 @@ tag                    = true
 sign_tags              = false
 tag_name               = "v{new_version}"
 tag_message            = "chore(release): {current_version} → {new_version}"
-allow_dirty            = true                                                  # git-cliff first then bump patch
+allow_dirty            = true
 commit                 = true
 message                = "chore(release): {current_version} → {new_version}"
 commit_args            = ""
@@ -234,11 +231,11 @@ pre_commit_hooks       = []
 post_commit_hooks      = []
 
 [[tool.bumpversion.files]]
-filename = "src/tg_gemini/__init__.py"
+filename = "pyproject.toml"
+search   = 'version         = "{current_version}"'
+replace  = 'version         = "{new_version}"'
 
 [[tool.bumpversion.files]]
 filename = "CHANGELOG.md"
 search   = "unreleased"
 replace  = "{new_version} - {now:%Y-%m-%d}"
-
-# https://callowayproject.github.io/bump-my-version/reference/search-and-replace-config/

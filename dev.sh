@@ -7,7 +7,7 @@ show_help() {
     echo ""
     echo "Commands:"
     echo "  format   Run code formatting (Ruff)"
-    echo "  lint     Run linters and type checking (Ruff, MyPy)"
+    echo "  lint     Run linters and type checking (Ruff, ty)"
     echo "  test     Run tests with coverage (Pytest)"
     echo "  docs     Manage documentation (dev, build, deploy)"
     echo "  bump     Bump version and update changelog"
@@ -19,8 +19,8 @@ show_help() {
 run_format() {
     echo "running formatter..."
     set -x
-    ruff check src tests --fix
-    ruff format src tests
+    uv run ruff check src/ tests/ --fix
+    uv run ruff format src/ tests/
     set +x
     echo "format complete."
 }
@@ -29,9 +29,9 @@ run_format() {
 run_lint() {
     echo "running linter..."
     set -x
-    mypy src                # type check
-    ruff check src          # linter
-    ruff format src --check # formatter check
+    uv run ty check src/            # type check
+    uv run ruff check src/          # linter
+    uv run ruff format src/ --check # formatter check
     set +x
     echo "lint complete."
 }
@@ -40,9 +40,9 @@ run_lint() {
 run_test() {
     echo "running tests..."
     set -x
-    coverage run --source=src -m pytest "$@"
-    coverage report --show-missing
-    coverage html --title "tg-gemini-coverage"
+    uv run coverage run --source=src -m pytest "$@"
+    uv run coverage report --show-missing
+    uv run coverage html --title "tg-gemini-coverage"
     set +x
     echo "tests complete."
 }
@@ -83,9 +83,9 @@ run_bump() {
     echo "bumping version..."
     set -x
     # update CHANGELOG.md use GITHUB_REPO ENV as github token
-    git-cliff -o -v --github-repo "atticuszeller/tg-gemini"
+    uv run git-cliff -o -v --github-repo "atticuszeller/tg-gemini"
     # bump version and commit with tags
-    bump-my-version bump patch
+    uv run bump-my-version bump patch
     # push remote
     git push origin main --tags
     set +x
@@ -99,7 +99,7 @@ run_check() {
     run_lint
     run_test
     set -x
-    pre-commit run --all-files
+    uv run pre-commit run --all-files
     set +x
     echo "all checks passed."
 }

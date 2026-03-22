@@ -1,5 +1,7 @@
-from .main import main
+"""tg-gemini: Telegram↔Gemini CLI middleware."""
 
-__all__ = ["main"]
+from importlib.metadata import version
 
-__version__ = "0.0.0"
+__version__ = version("tg-gemini")
+
+__all__ = ["__version__"]
