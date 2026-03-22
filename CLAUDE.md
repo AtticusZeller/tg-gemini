@@ -114,6 +114,8 @@ CLI (cli.py / typer)
         │     └── GeminiSession        # subprocess + JSONL stream parser
         ├── SessionManager              # per-user session state (JSON-persisted)
         ├── StreamPreview               # throttled streaming message edits
+        ├── SkillRegistry               # loads SKILL.md from skill_dirs
+        ├── CommandLoader               # loads .gemini/commands/*.toml
         └── I18n                        # EN/ZH translations
 ```
 
@@ -135,6 +137,8 @@ CLI (cli.py / typer)
 - **`allow_from`**: `"*"` (open) or comma-separated Telegram user IDs
 - **Gemini modes**: `default`, `auto_edit`, `yolo` (`-y`), `plan` — mapped to CLI flags in `GeminiSession`
 - **Attachments**: images/files saved to `tempfile.gettempdir()` as `@file` references in prompt; cleaned up after subprocess exits
+- **Skills**: Loaded from `<skill_dir>/<name>/SKILL.md` with YAML frontmatter; wrapped in a prompt that instructs the agent to execute the skill
+- **Commands**: Loaded from `<work_dir>/.gemini/commands/*.toml`; support `{{args}}`, `@{filepath}`, `!{cmd}` syntax
 
 ### Config Schema (`config.toml`)
 
@@ -163,6 +167,10 @@ enabled = true
 interval_ms = 1500
 min_delta_chars = 30
 max_chars = 2000
+
+# Skill directories (optional)
+[skills]
+dirs = ["~/.tg-gemini/skills"]
 ```
 
 ### Slash Commands
@@ -174,6 +182,9 @@ max_chars = 2000
 | `/mode [mode]` | List or switch approval mode |
 | `/stop` | Notify stop (best-effort; no subprocess kill in v1) |
 | `/help` | Show command list |
+| `/commands reload` | Reload Commands and Skills, refresh Telegram menu |
+
+**Command priority**: Built-in commands → Commands (`.gemini/commands/*.toml`) → Skills (`skill_dirs/*/SKILL.md`)
 
 ### JSONL Event Mapping
 

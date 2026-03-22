@@ -265,3 +265,90 @@ Current model: (default)
 当 `group_reply_all = true` 时，所有群消息都会被处理。
 
 会话键：`share_session_in_channel = false`（默认）时每人独立；`true` 时全群共享。
+
+---
+
+## 自定义 Commands
+
+从 `<work_dir>/.gemini/commands/*.toml` 加载。
+
+### 目录结构
+
+```
+work_dir/
+└── .gemini/
+    └── commands/
+        ├── review.toml       → /review
+        └── git/
+            └── commit.toml   → /git-commit
+```
+
+### TOML 格式
+
+```toml
+description = "Review code for issues"
+prompt = """
+You are an expert code reviewer. Review this:
+
+{{args}}
+"""
+```
+
+### 语法
+
+| 语法 | 说明 |
+|------|------|
+| `{{args}}` | 替换为用户参数 |
+| `@{filepath}` | 注入文件内容 |
+| `!{cmd}` | 执行 shell 命令 |
+
+---
+
+## Skills
+
+从 `<skill_dir>/<name>/SKILL.md` 加载。
+
+### 目录结构
+
+```
+~/.tg-gemini/skills/
+├── review/
+│   └── SKILL.md
+└── refactor/
+    └── SKILL.md
+```
+
+### SKILL.md 格式
+
+```markdown
+---
+name: Code Review
+description: Review code for issues
+---
+
+You are an expert code reviewer. Review the provided code:
+
+1. Check for bugs
+2. Check for security issues
+
+Provide actionable feedback.
+```
+
+### 加载 Skills
+
+在 `config.toml` 中配置：
+
+```toml
+[skills]
+dirs = ["~/.tg-gemini/skills"]
+```
+
+---
+
+## Commands 和 Skills 优先级
+
+1. **内置命令** — `/new`, `/help`, `/list` 等（最高优先级）
+2. **Commands** — `.gemini/commands/*.toml`
+3. **Skills** — `skill_dirs/*/SKILL.md`
+
+使用 `/commands reload` 重新加载所有 Commands 和 Skills，并刷新 Telegram 命令菜单。
