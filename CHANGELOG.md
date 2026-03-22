@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.10 - 2026-03-22
+
+### 🚀 Features
+
+- *(cli)* Auto-load default skills directory from .gemini/skills
+
+## 0.0.10 - 2026-03-22
+
+### ⚙️ Miscellaneous Tasks
+
+- Format code
+
 ## 0.0.9 - 2026-03-22
 
 ### 🐛 Bug Fixes
