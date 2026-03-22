@@ -254,17 +254,11 @@ class Engine:
                             max_len = self._config.display.tool_max_len
                             if len(tool_display) > max_len:
                                 tool_display = tool_display[:max_len] + "…"
-                            tool_msg = self._i18n.tf(
-                                MsgKey.TOOL_USE, event.tool_name, tool_display
-                            )
+                            if tool_display:
+                                tool_msg = f"🔧 **{event.tool_name}**\n──────────\n{tool_display}"
+                            else:
+                                tool_msg = f"🔧 **{event.tool_name}**"
                             await self._platform.send(ctx, tool_msg)
-
-                    case EventType.TOOL_RESULT:
-                        if not (istate and istate.quiet) and event.content:
-                            result_msg = self._i18n.tf(
-                                MsgKey.TOOL_RESULT, event.content
-                            )
-                            await self._platform.send(ctx, result_msg)
 
                     case EventType.ERROR:
                         err_str = str(event.error) if event.error else "unknown error"

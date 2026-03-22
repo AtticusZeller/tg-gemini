@@ -663,13 +663,13 @@ async def test_run_gemini_thinking_event_empty_content() -> None:
     # No thinking message sent since content was empty
 
 
-async def test_run_gemini_tool_result_empty_content() -> None:
-    """TOOL_RESULT event with empty content → no message sent."""
-    engine, agent, _platform = _make_engine()
+async def test_run_gemini_tool_result_never_sent() -> None:
+    """TOOL_RESULT events are never displayed (suppressed unconditionally)."""
+    engine, agent, platform = _make_engine()
     msg = _make_message()
 
     events = [
-        Event(type=EventType.TOOL_RESULT, content=""),  # empty → no-op
+        Event(type=EventType.TOOL_RESULT, content="file contents here"),
         Event(type=EventType.RESULT, done=True),
     ]
     mock_session = _mock_gemini_session(events)
@@ -677,7 +677,8 @@ async def test_run_gemini_tool_result_empty_content() -> None:
 
     session = engine._sessions.get_or_create(msg.session_key)
     await engine._run_gemini(msg, session)
-    # No tool result message since content was empty
+    calls = [str(c) for c in platform.send.call_args_list]
+    assert not any("file contents" in t or "📋" in t for t in calls)
 
 
 async def test_run_gemini_unknown_event_type() -> None:
@@ -1218,25 +1219,6 @@ async def test_quiet_mode_suppresses_tool_use() -> None:
     # Tool notification should NOT have been sent
     calls = [str(c) for c in platform.send.call_args_list]
     assert not any("shell" in t or "🔧" in t for t in calls)
-
-
-async def test_quiet_mode_suppresses_tool_result() -> None:
-    engine, agent, platform = _make_engine()
-    msg = _make_message()
-
-    from tg_gemini.engine import _InteractiveState
-
-    engine._interactive[msg.session_key] = _InteractiveState(quiet=True)
-
-    events = [
-        Event(type=EventType.TOOL_RESULT, content="file contents here"),
-        Event(type=EventType.RESULT, done=True),
-    ]
-    mock_sess = _mock_gemini_session(events)
-    agent.start_session.return_value = mock_sess
-
-    session = engine._sessions.get_or_create(msg.session_key)
-    await engine._run_gemini(msg, session)
 
     calls = [str(c) for c in platform.send.call_args_list]
     assert not any("file contents" in t for t in calls)
