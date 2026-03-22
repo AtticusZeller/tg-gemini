@@ -1,6 +1,7 @@
 """Tests for engine.py: Engine message routing and command dispatch."""
 
 import asyncio
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -78,7 +79,9 @@ def _make_message(
 async def test_engine_start_calls_platform() -> None:
     engine, _agent, platform = _make_engine()
     await engine.start()
-    platform.start.assert_called_once_with(engine.handle_message)
+    platform.start.assert_called_once_with(
+        engine.handle_message, on_started=engine._refresh_commands_menu
+    )
 
 
 async def test_engine_stop_calls_platform() -> None:
@@ -1595,3 +1598,141 @@ async def test_session_key_helper_shared() -> None:
     cfg = AppConfig(telegram=TelegramConfig(token="t", share_session_in_channel=True))
     engine, _, _ = _make_engine(config=cfg)
     assert engine._session_key(10, "42") == "telegram:10:shared"
+
+
+# ---------------------------------------------------------------------------
+# Skills + Commands integration tests
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_command_unknown_falls_to_unknown_msg() -> None:
+    """Unknown command with no cmd/skill match replies with UNKNOWN_CMD."""
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/nonexistent_xyz")
+    platform.send.assert_called_once()
+    call_text = platform.send.call_args[0][1]
+    assert call_text  # some reply was sent
+
+
+async def test_handle_command_commands_reload() -> None:
+    """/commands reload triggers _reload_commands_and_menu."""
+    engine, _agent, platform = _make_engine()
+    platform.set_commands_menu = AsyncMock()
+    msg = _make_message()
+    await engine.handle_command(msg, "/commands reload")
+    platform.send.assert_called_once()
+    reply_text = platform.send.call_args[0][1]
+    assert "Reloaded" in reply_text
+
+
+async def test_handle_command_commands_no_args_does_nothing() -> None:
+    """/commands without 'reload' does not crash."""
+    engine, _agent, platform = _make_engine()
+    platform.set_commands_menu = AsyncMock()
+    msg = _make_message()
+    await engine.handle_command(msg, "/commands")
+    # No reply for bare /commands
+    platform.send.assert_not_called()
+
+
+async def test_refresh_commands_menu_calls_set_commands_menu() -> None:
+    """_refresh_commands_menu calls platform.set_commands_menu."""
+    engine, _agent, platform = _make_engine()
+    platform.set_commands_menu = AsyncMock()
+    await engine._refresh_commands_menu()
+    platform.set_commands_menu.assert_called_once()
+    commands = platform.set_commands_menu.call_args[0][0]
+    names = [c[0] for c in commands]
+    assert "help" in names
+    assert "new" in names
+
+
+async def test_refresh_commands_menu_cmd_before_skill() -> None:
+    """Commands appear before Skills in menu."""
+    engine, _agent, platform = _make_engine()
+    platform.set_commands_menu = AsyncMock()
+
+    # Inject a fake command and skill
+    fake_cmd = MagicMock()
+    fake_cmd.name = "zcmd"
+    fake_cmd.description = "A command"
+    engine._cmd_loader.list_all = lambda: [fake_cmd]  # type: ignore[method-assign]
+
+    fake_skill = MagicMock()
+    fake_skill.name = "askill"
+    fake_skill.description = "A skill"
+    engine._skill_registry.list_all = lambda: [fake_skill]  # type: ignore[method-assign]
+
+    await engine._refresh_commands_menu()
+    commands = platform.set_commands_menu.call_args[0][0]
+    names = [c[0] for c in commands]
+
+    # zcmd should appear before askill (commands before skills)
+    assert names.index("zcmd") < names.index("askill")
+
+
+async def test_refresh_commands_menu_prefixes() -> None:
+    """Commands get [CMD] prefix, Skills get [SKILL] prefix in description."""
+    engine, _agent, platform = _make_engine()
+    platform.set_commands_menu = AsyncMock()
+
+    fake_cmd = MagicMock()
+    fake_cmd.name = "mycmd"
+    fake_cmd.description = "My command desc"
+    engine._cmd_loader.list_all = lambda: [fake_cmd]  # type: ignore[method-assign]
+
+    fake_skill = MagicMock()
+    fake_skill.name = "myskill"
+    fake_skill.description = "My skill desc"
+    engine._skill_registry.list_all = lambda: [fake_skill]  # type: ignore[method-assign]
+
+    await engine._refresh_commands_menu()
+    commands = platform.set_commands_menu.call_args[0][0]
+    desc_map = dict(commands)
+
+    assert "[CMD]" in desc_map["mycmd"]
+    assert "[SKILL]" in desc_map["myskill"]
+
+
+async def test_handle_command_dispatches_to_custom_command() -> None:
+    """Engine routes /review to custom command via CommandLoader."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    engine, _agent, platform = _make_engine()
+
+    fake_cmd = MagicMock()
+    fake_cmd.name = "review"
+    fake_cmd.description = "Review"
+    engine._cmd_loader.get = MagicMock(return_value=fake_cmd)
+    engine._cmd_loader.expand_prompt = AsyncMock(return_value="Expanded prompt")
+
+    # _send_to_gemini needs a running gemini, so just mock _process
+    engine._process = AsyncMock()  # type: ignore[method-assign]
+
+    msg = _make_message()
+    result = await engine.handle_command(msg, "/review some code")
+    assert result is True
+    engine._cmd_loader.get.assert_called_once_with("review")
+    engine._cmd_loader.expand_prompt.assert_awaited_once()
+
+
+async def test_handle_command_dispatches_to_skill() -> None:
+    """Engine routes /refactor to skill via SkillRegistry."""
+    from tg_gemini.skills import Skill
+
+    engine, _agent, platform = _make_engine()
+
+    # No matching custom command
+    engine._cmd_loader.get = MagicMock(return_value=None)
+
+    fake_skill = Skill(
+        "refactor", "Refactor", "Refactor code", "Instructions.", Path("/tmp")
+    )
+    engine._skill_registry.get = MagicMock(return_value=fake_skill)
+    engine._process = AsyncMock()  # type: ignore[method-assign]
+
+    msg = _make_message()
+    result = await engine.handle_command(msg, "/refactor my code")
+    assert result is True
+    engine._skill_registry.get.assert_called_once_with("refactor")

@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 type GeminiMode = Literal["default", "auto_edit", "yolo", "plan"]
@@ -19,6 +20,7 @@ __all__ = [
     "LogConfig",
     "LogLevel",
     "RateLimitConfig",
+    "SkillConfig",
     "StreamPreviewConfig",
     "TelegramConfig",
     "load_config",
@@ -70,6 +72,12 @@ class RateLimitConfig(_StrictModel):
     window_secs: float = 60.0
 
 
+class SkillConfig(_StrictModel):
+    """Configuration for skill directories."""
+
+    dirs: list[str] = Field(default_factory=list)
+
+
 class AppConfig(_StrictModel):
     telegram: TelegramConfig
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
@@ -79,13 +87,16 @@ class AppConfig(_StrictModel):
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     stream_preview: StreamPreviewConfig = Field(default_factory=StreamPreviewConfig)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
+    skills: SkillConfig = Field(default_factory=SkillConfig)
 
 
 def load_config(path: Path) -> AppConfig:
     """Load and validate configuration from a TOML file."""
     with path.open("rb") as f:
         raw = tomllib.load(f)
-    return AppConfig(**raw)
+    cfg = AppConfig(**raw)
+    logger.info("config loaded", path=str(path))
+    return cfg
 
 
 def resolve_config_path(explicit: str | None) -> Path:

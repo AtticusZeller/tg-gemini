@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated
 
@@ -49,7 +50,8 @@ def start(
         format="{time} {level} {message}",
     )
 
-    logger.info("tg-gemini starting", config=str(config_path))
+    _ver = version("tg-gemini")
+    logger.info("tg-gemini starting", version=_ver, config=str(config_path))
 
     # Determine language
     lang = Language(cfg.language) if cfg.language in ("en", "zh") else Language.EN
@@ -81,6 +83,9 @@ def start(
         max_messages=cfg.rate_limit.max_messages, window_secs=cfg.rate_limit.window_secs
     )
     dedup = MessageDedup()
+
+    skill_dirs = [Path(d).expanduser() for d in cfg.skills.dirs]
+
     engine = Engine(
         config=cfg,
         agent=agent,
@@ -89,6 +94,7 @@ def start(
         i18n=i18n,
         rate_limiter=rate_limiter,
         dedup=dedup,
+        skill_dirs=skill_dirs,
     )
 
     async def _run() -> None:

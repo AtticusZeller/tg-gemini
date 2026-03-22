@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from loguru import logger
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -217,7 +217,11 @@ class TelegramPlatform:
                 await handler(data, user_id, chat_id, message_id)
                 return
 
-    async def start(self, handler: MessageHandlerType) -> None:
+    async def start(
+        self,
+        handler: MessageHandlerType,
+        on_started: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Start long-polling. Blocks until stop() is called."""
         self._message_handler = handler
         self._app = Application.builder().token(self._token).build()
@@ -235,6 +239,7 @@ class TelegramPlatform:
             me = await app.bot.get_me()
             self._bot_id = str(me.id)
             self._bot_username = me.username or ""
+            logger.info("bot started", username=self._bot_username)
         except Exception as exc:
             logger.warning("TelegramPlatform: failed to fetch bot info", error=exc)
 
@@ -260,6 +265,7 @@ class TelegramPlatform:
                     "switch",
                     "delete",
                     "name",
+                    "commands",
                 ],
                 self._handle_update,
             )
@@ -269,6 +275,8 @@ class TelegramPlatform:
         async with app:
             await app.start()
             await app.updater.start_polling(drop_pending_updates=True)  # type: ignore[union-attr]
+            if on_started:
+                await on_started()
             try:
                 while self._app is not None:
                     await asyncio.sleep(0.5)
@@ -279,6 +287,17 @@ class TelegramPlatform:
     async def stop(self) -> None:
         """Signal the platform to stop polling."""
         self._app = None
+
+    async def set_commands_menu(self, commands: list[tuple[str, str]]) -> None:
+        """Register the bot command list shown in the Telegram UI."""
+        if self._app is None:
+            return
+        try:
+            bot_commands = [BotCommand(name, desc[:100]) for name, desc in commands]
+            await self._app.bot.set_my_commands(bot_commands)
+            logger.info("commands menu set", count=len(bot_commands))
+        except Exception as exc:
+            logger.warning("failed to set commands menu", error=exc)
 
     async def reply(self, ctx: ReplyContext, content: str) -> None:
         """Send a reply, converting markdown to HTML. Splits if >4096 chars."""

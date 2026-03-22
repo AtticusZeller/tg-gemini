@@ -3,10 +3,12 @@
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from loguru import logger
 
 from tg_gemini.card import Card, CardBuilder, CardButton
+from tg_gemini.commands import CommandLoader
 from tg_gemini.config import AppConfig
 from tg_gemini.dedup import MessageDedup
 from tg_gemini.gemini import GeminiAgent, GeminiSession
@@ -14,6 +16,7 @@ from tg_gemini.i18n import I18n, Language, MsgKey
 from tg_gemini.models import EventType, Message, ReplyContext
 from tg_gemini.ratelimit import RateLimiter
 from tg_gemini.session import Session, SessionManager
+from tg_gemini.skills import SkillRegistry
 from tg_gemini.streaming import StreamPreview
 from tg_gemini.telegram_platform import TelegramPlatform
 
@@ -43,6 +46,7 @@ class Engine:
         i18n: I18n,
         rate_limiter: RateLimiter | None = None,
         dedup: MessageDedup | None = None,
+        skill_dirs: list[Path] | None = None,
     ) -> None:
         self._config = config
         self._agent = agent
@@ -56,12 +60,23 @@ class Engine:
         self._active_gemini: dict[str, GeminiSession] = {}
         self._interactive: dict[str, _InteractiveState] = {}
 
+        # Load Commands and Skills
+        self._cmd_loader = CommandLoader(Path(config.gemini.work_dir))
+        cmd_count = self._cmd_loader.load()
+        self._skill_registry = SkillRegistry(skill_dirs or [])
+        skill_count = self._skill_registry.load()
+        logger.info(
+            "commands and skills loaded", commands=cmd_count, skills=skill_count
+        )
+
     async def start(self) -> None:
         """Start the Telegram polling loop."""
         self._platform.register_callback_prefix("cmd:", self._handle_cmd_callback)
         self._platform.register_callback_prefix("act:", self._handle_act_callback)
         self._platform.register_callback_prefix("sel:", self._handle_sel_callback)
-        await self._platform.start(self.handle_message)
+        await self._platform.start(
+            self.handle_message, on_started=self._refresh_commands_menu
+        )
 
     async def stop(self) -> None:
         """Stop the platform."""
@@ -146,7 +161,26 @@ class Engine:
                 await self._cmd_delete_mode(msg)
             case "/name":
                 await self._cmd_name(msg, args)
+            case "/commands":
+                if args.strip() == "reload":
+                    await self._reload_commands_and_menu(msg)
             case _:
+                cmd_name = cmd[1:]  # strip leading "/"
+
+                # Custom Commands (from .gemini/commands/)
+                if command := self._cmd_loader.get(cmd_name):
+                    logger.info("executing command", cmd=cmd_name, user=msg.user_name)
+                    expanded = await self._cmd_loader.expand_prompt(command, args)
+                    await self._send_to_gemini(msg, expanded)
+                    return True
+
+                # Skills (from skill dirs)
+                if skill := self._skill_registry.get(cmd_name):
+                    logger.info("executing skill", skill=skill.name, user=msg.user_name)
+                    prompt = SkillRegistry.build_invocation_prompt(skill, args)
+                    await self._send_to_gemini(msg, prompt)
+                    return True
+
                 await self._reply(msg, self._i18n.t(MsgKey.UNKNOWN_CMD))
                 return True
         return True
@@ -617,3 +651,59 @@ class Engine:
         new_name = args.strip()
         self._sessions.set_session_name(session.id, new_name)
         await self._reply(msg, self._i18n.tf(MsgKey.SESSION_NAMED, new_name))
+
+    # ── Skills + Commands helpers ─────────────────────────────────────────
+
+    async def _send_to_gemini(self, msg: Message, content: str) -> None:
+        """Forward expanded skill/command prompt to Gemini."""
+        new_msg = Message(
+            session_key=msg.session_key,
+            platform=msg.platform,
+            user_id=msg.user_id,
+            user_name=msg.user_name,
+            content=content,
+            reply_ctx=msg.reply_ctx,
+        )
+        session = self._sessions.get_or_create(msg.session_key)
+        await self._process(new_msg, session)
+
+    async def _reload_commands_and_menu(self, msg: Message) -> None:
+        """Reload commands and skills, then refresh Telegram command menu."""
+        cmd_count = self._cmd_loader.reload()
+        self._skill_registry.invalidate()
+        skill_count = self._skill_registry.load()
+        logger.info(
+            "reloaded commands and skills", commands=cmd_count, skills=skill_count
+        )
+        await self._reply(msg, f"Reloaded: {cmd_count} commands, {skill_count} skills")
+        await self._refresh_commands_menu()
+
+    async def _refresh_commands_menu(self) -> None:
+        """Build the full command list and push it to Telegram."""
+        commands: list[tuple[str, str]] = [
+            ("new", "Start new session"),
+            ("list", "List all sessions"),
+            ("switch", "Switch active session"),
+            ("current", "Show current session"),
+            ("history", "Show conversation history"),
+            ("name", "Rename session"),
+            ("delete", "Delete sessions"),
+            ("status", "Show status"),
+            ("model", "Show/switch model"),
+            ("mode", "Show/switch mode"),
+            ("lang", "Switch language"),
+            ("quiet", "Toggle quiet mode"),
+            ("stop", "Stop agent"),
+            ("help", "Show help"),
+            ("commands", "Reload commands: /commands reload"),
+        ]
+        # Commands before Skills; prefix distinguishes them in description
+        commands.extend(
+            (cmd.name, f"[CMD] {cmd.description}")
+            for cmd in self._cmd_loader.list_all()
+        )
+        commands.extend(
+            (skill.name, f"[SKILL] {skill.description}")
+            for skill in self._skill_registry.list_all()
+        )
+        await self._platform.set_commands_menu(commands)
