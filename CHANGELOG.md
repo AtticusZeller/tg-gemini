@@ -2,11 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.0.10 - 2026-03-22
+## 0.0.11 - 2026-03-22
 
 ### 🚀 Features
 
 - *(cli)* Auto-load default skills directory from .gemini/skills
+
+### 📚 Documentation
+
+- *(cli)* Update auto-loading documentation and vscode settings
 
 ## 0.0.10 - 2026-03-22
 
