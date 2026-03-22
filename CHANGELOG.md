@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.4 - 2026-03-22
+
+### 🐛 Bug Fixes
+
+- *(ci)* Py>=3.11
+
 ## 0.0.3 - 2026-03-22
 
 ### 🐛 Bug Fixes
