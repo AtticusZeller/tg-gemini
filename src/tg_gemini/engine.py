@@ -703,7 +703,10 @@ class Engine:
             for cmd in self._cmd_loader.list_all()
         )
         commands.extend(
-            (skill.name.replace("/", "-").replace(":", "-"), f"[SKILL] {skill.description}")
+            (
+                skill.name.replace("/", "-").replace(":", "-"),
+                f"[SKILL] {skill.description}",
+            )
             for skill in self._skill_registry.list_all()
         )
         await self._platform.set_commands_menu(commands)
