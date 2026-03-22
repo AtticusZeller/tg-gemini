@@ -19,18 +19,37 @@ class Skill:
 
 
 class SkillRegistry:
-    """Scans skill directories and loads SKILL.md files."""
+    """Scans skill directories and loads SKILL.md files.
 
-    def __init__(self, skill_dirs: list[Path]) -> None:
-        self._skill_dirs = skill_dirs
+    Auto-loads from <work_dir>/.gemini/skills/ (like CommandLoader).
+    Additional directories can be added via add_directory().
+    """
+
+    def __init__(self, work_dir: Path) -> None:
+        self._work_dir = work_dir
+        self._extra_dirs: list[Path] = []
         self._skills: dict[str, Skill] = {}
+
+    def add_directory(self, path: Path) -> None:
+        """Add an additional skill directory (e.g., from config)."""
+        if path not in self._extra_dirs:
+            self._extra_dirs.append(path)
 
     def load(self) -> int:
         """Scan skill_dirs and load all SKILL.md files. Returns count loaded."""
         count = 0
-        for dir_path in self._skill_dirs:
+        # Default: <work_dir>/.gemini/skills/
+        default_dir = self._work_dir / ".gemini" / "skills"
+        dirs = (
+            [default_dir, *self._extra_dirs]
+            if default_dir.exists()
+            else self._extra_dirs
+        )
+
+        for dir_path in dirs:
             if not dir_path.exists():
                 continue
+            logger.info(f"loading skills from {dir_path!s}")
             for subdir in sorted(dir_path.iterdir()):
                 if not subdir.is_dir():
                     continue
@@ -39,13 +58,11 @@ class SkillRegistry:
                     try:
                         skill = self._parse_skill(skill_file, subdir.name)
                         self._skills[skill.name.lower()] = skill
-                        logger.info(
-                            "loaded skill", name=skill.name, path=str(skill_file)
-                        )
+                        logger.info(f"loaded skill '{skill.name}'")
                         count += 1
                     except Exception as exc:
                         logger.warning(
-                            "failed to load skill", path=str(skill_file), error=exc
+                            f"failed to load skill from {skill_file!s}", error=exc
                         )
         return count
 

@@ -56,17 +56,17 @@ def test_load_parses_simple_toml(tmp_path: Path) -> None:
     assert cmd.description == "Review code"
 
 
-def test_load_replaces_colon_with_hyphen(tmp_path: Path) -> None:
-    """Nested toml: git/commit.toml → name='git-commit', not 'git:commit'."""
+def test_load_replaces_colon_with_underscore(tmp_path: Path) -> None:
+    """Nested toml: git/commit.toml → name='git_commit' (underscore, valid Telegram command)."""
     _write_toml(
         tmp_path / ".gemini" / "commands" / "git" / "commit.toml",
         'description = "Commit"\nprompt = "Do commit: {{args}}"',
     )
     loader = _make_loader(tmp_path)
     assert loader.load() == 1
-    cmd = loader.get("git-commit")
+    cmd = loader.get("git_commit")
     assert cmd is not None
-    assert cmd.name == "git-commit"
+    assert cmd.name == "git_commit"
 
 
 def test_load_skips_toml_missing_prompt(tmp_path: Path) -> None:

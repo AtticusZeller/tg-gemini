@@ -95,7 +95,7 @@ def load_config(path: Path) -> AppConfig:
     with path.open("rb") as f:
         raw = tomllib.load(f)
     cfg = AppConfig(**raw)
-    logger.info("config loaded", path=str(path))
+    logger.info(f"config loaded: {path}")
     return cfg
 
 

@@ -84,7 +84,8 @@ def start(
     )
     dedup = MessageDedup()
 
-    skill_dirs = [Path(d).expanduser() for d in cfg.skills.dirs]
+    # Extra skill dirs from config (optional; default .gemini/skills/ auto-loaded by Engine)
+    extra_skill_dirs = [Path(d).expanduser() for d in cfg.skills.dirs]
 
     engine = Engine(
         config=cfg,
@@ -94,7 +95,7 @@ def start(
         i18n=i18n,
         rate_limiter=rate_limiter,
         dedup=dedup,
-        skill_dirs=skill_dirs,
+        skill_dirs=extra_skill_dirs,
     )
 
     async def _run() -> None:

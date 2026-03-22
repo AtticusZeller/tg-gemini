@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,6 +26,17 @@ __all__ = ["Engine"]
 _MAX_QUEUE = 5
 _PAGE_SIZE = 5
 _HISTORY_DISPLAY = 10  # recent history entries shown by /history
+
+
+def _to_tg_command(name: str) -> str:
+    """Normalize an arbitrary name to a valid Telegram command slug.
+
+    Rules: lowercase, only [a-z0-9_], collapse runs of underscores,
+    strip leading/trailing underscores, truncate to 32 chars.
+    """
+    slug = re.sub(r"[^a-z0-9]", "_", name.lower())
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return slug[:32] or "cmd"
 
 
 @dataclass
@@ -60,13 +72,18 @@ class Engine:
         self._active_gemini: dict[str, GeminiSession] = {}
         self._interactive: dict[str, _InteractiveState] = {}
 
-        # Load Commands and Skills
-        self._cmd_loader = CommandLoader(Path(config.gemini.work_dir))
+        # Load Commands and Skills (auto-load from .gemini/commands/ and .gemini/skills/)
+        work_dir = Path(config.gemini.work_dir).expanduser().resolve()
+        logger.info(f"work_dir: {work_dir}")
+        self._cmd_loader = CommandLoader(work_dir)
         cmd_count = self._cmd_loader.load()
-        self._skill_registry = SkillRegistry(skill_dirs or [])
+        self._skill_registry = SkillRegistry(work_dir)
+        # Add extra skill dirs from config
+        for d in skill_dirs or []:
+            self._skill_registry.add_directory(d)
         skill_count = self._skill_registry.load()
         logger.info(
-            "commands and skills loaded", commands=cmd_count, skills=skill_count
+            f"commands and skills loaded: {cmd_count} commands, {skill_count} skills"
         )
 
     async def start(self) -> None:
@@ -673,7 +690,7 @@ class Engine:
         self._skill_registry.invalidate()
         skill_count = self._skill_registry.load()
         logger.info(
-            "reloaded commands and skills", commands=cmd_count, skills=skill_count
+            f"reloaded commands and skills: {cmd_count} commands, {skill_count} skills"
         )
         await self._reply(msg, f"Reloaded: {cmd_count} commands, {skill_count} skills")
         await self._refresh_commands_menu()
@@ -699,14 +716,11 @@ class Engine:
         ]
         # Commands before Skills; prefix distinguishes them in description
         commands.extend(
-            (cmd.name, f"[CMD] {cmd.description}")
+            (_to_tg_command(cmd.name), f"[CMD] {cmd.description}")
             for cmd in self._cmd_loader.list_all()
         )
         commands.extend(
-            (
-                skill.name.replace("/", "-").replace(":", "-"),
-                f"[SKILL] {skill.description}",
-            )
+            (_to_tg_command(skill.name), f"[SKILL] {skill.description}")
             for skill in self._skill_registry.list_all()
         )
         await self._platform.set_commands_menu(commands)

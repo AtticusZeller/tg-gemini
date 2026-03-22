@@ -29,6 +29,7 @@ class CommandLoader:
     def load(self) -> int:
         """Scan .gemini/commands/ and load all .toml files. Returns count loaded."""
         commands_dir = self._work_dir / ".gemini" / "commands"
+        logger.info(f"loading commands from {commands_dir!s}")
         if not commands_dir.exists():
             return 0
         count = 0
@@ -36,10 +37,10 @@ class CommandLoader:
             try:
                 cmd = self._parse_command(toml_file, commands_dir)
                 self._commands[cmd.name.lower()] = cmd
-                logger.info("loaded command", name=cmd.name, path=str(toml_file))
+                logger.info(f"loaded command '{cmd.name}'")
                 count += 1
             except Exception as exc:
-                logger.warning("failed to load command", path=str(toml_file), error=exc)
+                logger.warning(f"failed to load command from {toml_file!s}", error=exc)
         return count
 
     def reload(self) -> int:
@@ -48,9 +49,9 @@ class CommandLoader:
 
     def _parse_command(self, file: Path, base_dir: Path) -> GeminiCommand:
         rel = file.relative_to(base_dir)
-        # git/commit.toml → "git-commit"  (`:` not allowed in Telegram commands)
+        # git/commit.toml → "git_commit"  (only [a-z0-9_] allowed in Telegram commands)
         raw_name = str(rel.with_suffix("")).replace("/", ":").replace("\\", ":")
-        name = raw_name.replace(":", "-")
+        name = raw_name.replace(":", "_")
 
         with file.open("rb") as f:
             data = tomllib.load(f)

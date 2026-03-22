@@ -111,3 +111,68 @@ def test_start_creates_data_dir(tmp_path: Path) -> None:
         result = runner.invoke(app, ["--config", str(config_file)])
         assert result.exit_code == 0
         assert data_dir.exists()
+
+
+def test_start_passes_extra_skill_dirs_from_config(tmp_path: Path) -> None:
+    """start passes [skills].dirs from config to Engine as extra skill dirs."""
+    extra_skills = tmp_path / "my_skills"
+    extra_skills.mkdir(parents=True)
+
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        f'[telegram]\ntoken = "123:ABC"\n\n[gemini]\nwork_dir = "{tmp_path}"\n'
+        f'\n[skills]\ndirs = ["{extra_skills}"]\n'
+    )
+
+    captured_skill_dirs: list[Path] | None = None
+
+    def capture_engine_init(*_args: Any, **kwargs: Any) -> MagicMock:
+        nonlocal captured_skill_dirs
+        captured_skill_dirs = kwargs.get("skill_dirs")
+        mock_engine = MagicMock()
+        mock_engine.start = AsyncMock(return_value=None)
+        return mock_engine
+
+    with (
+        patch("tg_gemini.engine.Engine", side_effect=capture_engine_init),
+        patch("tg_gemini.gemini.GeminiAgent"),
+        patch("tg_gemini.telegram_platform.TelegramPlatform"),
+        patch("tg_gemini.session.SessionManager"),
+        patch("asyncio.run", side_effect=_ki_run),
+    ):
+        result = runner.invoke(app, ["--config", str(config_file)])
+        assert result.exit_code == 0
+
+    assert captured_skill_dirs is not None
+    assert extra_skills in captured_skill_dirs
+
+
+def test_start_passes_empty_skill_dirs_when_no_config(tmp_path: Path) -> None:
+    """start passes empty skill_dirs when [skills] not in config (auto-load handled by Engine)."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        f'[telegram]\ntoken = "123:ABC"\n\n[gemini]\nwork_dir = "{tmp_path}"\n'
+    )
+
+    captured_skill_dirs: list[Path] | None = None
+
+    def capture_engine_init(*_args: Any, **kwargs: Any) -> MagicMock:
+        nonlocal captured_skill_dirs
+        captured_skill_dirs = kwargs.get("skill_dirs")
+        mock_engine = MagicMock()
+        mock_engine.start = AsyncMock(return_value=None)
+        return mock_engine
+
+    with (
+        patch("tg_gemini.engine.Engine", side_effect=capture_engine_init),
+        patch("tg_gemini.gemini.GeminiAgent"),
+        patch("tg_gemini.telegram_platform.TelegramPlatform"),
+        patch("tg_gemini.session.SessionManager"),
+        patch("asyncio.run", side_effect=_ki_run),
+    ):
+        result = runner.invoke(app, ["--config", str(config_file)])
+        assert result.exit_code == 0
+
+    assert captured_skill_dirs is not None
+    # Empty list when no [skills] config (Engine auto-loads default .gemini/skills/)
+    assert captured_skill_dirs == []

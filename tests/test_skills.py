@@ -5,8 +5,16 @@ from pathlib import Path
 from tg_gemini.skills import Skill, SkillRegistry
 
 
-def _make_skill_dir(tmp_path: Path, name: str, content: str) -> Path:
-    skill_dir = tmp_path / name
+def _make_skill_dir(parent: Path, name: str, content: str) -> Path:
+    skill_dir = parent / ".gemini" / "skills" / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(content)
+    return skill_dir
+
+
+def _make_skill_dir_extra(parent: Path, name: str, content: str) -> Path:
+    """Create skill in extra (non-default) dir."""
+    skill_dir = parent / name
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(content)
     return skill_dir
@@ -29,23 +37,26 @@ def test_skill_fields() -> None:
     assert skill.prompt == "You are a reviewer."
 
 
-# ── SkillRegistry.load ─────────────────────────────────────────────────────
+# ── SkillRegistry.load (auto-load from .gemini/skills/) ────────────────────
 
 
-def test_load_returns_zero_if_no_dirs() -> None:
-    registry = SkillRegistry([])
+def test_load_returns_zero_if_no_default_skills(tmp_path: Path) -> None:
+    """No .gemini/skills/ directory exists."""
+    registry = SkillRegistry(tmp_path)
     assert registry.load() == 0
 
 
-def test_load_skips_nonexistent_dir(tmp_path: Path) -> None:
-    registry = SkillRegistry([tmp_path / "nonexistent"])
+def test_load_skips_nonexistent_extra_dir(tmp_path: Path) -> None:
+    """Extra dir added but doesn't exist."""
+    registry = SkillRegistry(tmp_path)
+    registry.add_directory(tmp_path / "nonexistent")
     assert registry.load() == 0
 
 
 def test_load_parses_skill_with_frontmatter(tmp_path: Path) -> None:
     content = "---\nname: Code Review\ndescription: Review code for issues\n---\n\nYou are a reviewer."
     _make_skill_dir(tmp_path, "review", content)
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     assert registry.load() == 1
     skill = registry.get("review")
     assert skill is not None
@@ -57,7 +68,7 @@ def test_load_parses_skill_with_frontmatter(tmp_path: Path) -> None:
 def test_load_parses_skill_without_frontmatter(tmp_path: Path) -> None:
     content = "You are a refactoring expert."
     _make_skill_dir(tmp_path, "refactor", content)
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     assert registry.load() == 1
     skill = registry.get("refactor")
     assert skill is not None
@@ -67,47 +78,60 @@ def test_load_parses_skill_without_frontmatter(tmp_path: Path) -> None:
 
 
 def test_load_ignores_non_directory_entries(tmp_path: Path) -> None:
-    (tmp_path / "file.md").write_text("not a skill dir")
-    registry = SkillRegistry([tmp_path])
+    skills_dir = tmp_path / ".gemini" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "file.md").write_text("not a skill dir")
+    registry = SkillRegistry(tmp_path)
     assert registry.load() == 0
 
 
 def test_load_ignores_dirs_without_skill_md(tmp_path: Path) -> None:
-    subdir = tmp_path / "noskill"
-    subdir.mkdir()
+    skills_dir = tmp_path / ".gemini" / "skills"
+    subdir = skills_dir / "noskill"
+    subdir.mkdir(parents=True)
     (subdir / "README.md").write_text("not a skill")
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     assert registry.load() == 0
 
 
 def test_load_multiple_skills(tmp_path: Path) -> None:
     for name in ("alpha", "beta", "gamma"):
         _make_skill_dir(tmp_path, name, f"Skill: {name}")
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     assert registry.load() == 3
 
 
-def test_load_multiple_dirs(tmp_path: Path) -> None:
-    dir_a = tmp_path / "a"
-    dir_b = tmp_path / "b"
-    dir_a.mkdir()
-    dir_b.mkdir()
-    _make_skill_dir(dir_a, "skill1", "Skill 1")
-    _make_skill_dir(dir_b, "skill2", "Skill 2")
-    registry = SkillRegistry([dir_a, dir_b])
+def test_load_from_extra_dirs(tmp_path: Path) -> None:
+    """Skills can also be loaded from extra directories added via add_directory()."""
+    extra_dir = tmp_path / "extra_skills"
+    _make_skill_dir_extra(extra_dir, "extra_skill", "Extra skill content")
+    registry = SkillRegistry(tmp_path)
+    registry.add_directory(extra_dir)
+    assert registry.load() == 1
+    skill = registry.get("extra_skill")
+    assert skill is not None
+    assert skill.prompt == "Extra skill content"
+
+
+def test_load_combines_default_and_extra_dirs(tmp_path: Path) -> None:
+    """Load from both default .gemini/skills/ and extra dirs."""
+    _make_skill_dir(tmp_path, "default_skill", "Default")
+    extra_dir = tmp_path / "extra"
+    _make_skill_dir_extra(extra_dir, "extra_skill", "Extra")
+    registry = SkillRegistry(tmp_path)
+    registry.add_directory(extra_dir)
     assert registry.load() == 2
 
 
 def test_load_logs_warning_on_bad_skill(tmp_path: Path) -> None:
     """A skill dir with an unreadable SKILL.md is skipped without crash."""
-    skill_dir = tmp_path / "bad"
-    skill_dir.mkdir()
+    skills_dir = tmp_path / ".gemini" / "skills"
+    skill_dir = skills_dir / "bad"
+    skill_dir.mkdir(parents=True)
     skill_file = skill_dir / "SKILL.md"
     skill_file.write_text("---\nbad: yaml: :\n---\nbody")
-    # Even with bad YAML, _extract_frontmatter falls back to empty dict
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     count = registry.load()
-    # Should still load with fallback (no exception raised)
     assert count >= 0
 
 
@@ -116,7 +140,7 @@ def test_load_logs_warning_on_bad_skill(tmp_path: Path) -> None:
 
 def test_get_case_insensitive(tmp_path: Path) -> None:
     _make_skill_dir(tmp_path, "review", "Review skill")
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     registry.load()
     assert registry.get("REVIEW") is not None
     assert registry.get("Review") is not None
@@ -124,14 +148,14 @@ def test_get_case_insensitive(tmp_path: Path) -> None:
 
 def test_get_normalizes_hyphens_underscores(tmp_path: Path) -> None:
     _make_skill_dir(tmp_path, "code-review", "Review skill")
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     registry.load()
     assert registry.get("code_review") is not None
     assert registry.get("code-review") is not None
 
 
 def test_get_returns_none_for_unknown(tmp_path: Path) -> None:
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     registry.load()
     assert registry.get("nonexistent") is None
 
@@ -142,14 +166,14 @@ def test_get_returns_none_for_unknown(tmp_path: Path) -> None:
 def test_list_all_sorted(tmp_path: Path) -> None:
     for name in ("zebra", "apple", "mango"):
         _make_skill_dir(tmp_path, name, f"Skill {name}")
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     registry.load()
     names = [s.name for s in registry.list_all()]
     assert names == sorted(names)
 
 
 def test_list_all_empty_before_load() -> None:
-    registry = SkillRegistry([])
+    registry = SkillRegistry(Path("/tmp/nonexistent"))
     assert registry.list_all() == []
 
 
@@ -158,7 +182,7 @@ def test_list_all_empty_before_load() -> None:
 
 def test_invalidate_clears_skills(tmp_path: Path) -> None:
     _make_skill_dir(tmp_path, "review", "Review")
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     registry.load()
     assert registry.get("review") is not None
     registry.invalidate()
@@ -191,14 +215,14 @@ def test_build_invocation_prompt_with_args() -> None:
 
 
 def test_extract_frontmatter_no_dashes() -> None:
-    registry = SkillRegistry([])
+    registry = SkillRegistry(Path("/tmp"))
     fm, body = registry._extract_frontmatter("Just a body.")
     assert fm == {}
     assert body == "Just a body."
 
 
 def test_extract_frontmatter_incomplete_dashes() -> None:
-    registry = SkillRegistry([])
+    registry = SkillRegistry(Path("/tmp"))
     fm, body = registry._extract_frontmatter("---\nname: test\n")
     assert fm == {}
 
@@ -206,8 +230,21 @@ def test_extract_frontmatter_incomplete_dashes() -> None:
 def test_description_falls_back_to_first_body_line(tmp_path: Path) -> None:
     content = "First line as description.\nSecond line."
     _make_skill_dir(tmp_path, "myfoo", content)
-    registry = SkillRegistry([tmp_path])
+    registry = SkillRegistry(tmp_path)
     registry.load()
     skill = registry.get("myfoo")
     assert skill is not None
     assert "First line" in skill.description
+
+
+# ── add_directory ─────────────────────────────────────────────────────────
+
+
+def test_add_directory_avoids_duplicates(tmp_path: Path) -> None:
+    """Same directory added twice only loads once."""
+    extra_dir = tmp_path / "extra"
+    _make_skill_dir_extra(extra_dir, "skill1", "Content")
+    registry = SkillRegistry(tmp_path)
+    registry.add_directory(extra_dir)
+    registry.add_directory(extra_dir)  # Duplicate
+    assert registry.load() == 1

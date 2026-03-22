@@ -295,19 +295,22 @@ class TelegramPlatform:
         bot_commands = [BotCommand(name, desc[:100]) for name, desc in commands]
         try:
             await self._app.bot.set_my_commands(bot_commands)
-            logger.info("commands menu set", count=len(bot_commands))
+            logger.info(f"commands menu set: {len(bot_commands)} entries")
             return
         except Exception as exc:
             logger.warning(
-                "failed to set commands menu, retrying...",
+                f"failed to set commands menu, retrying...{exc:}, type{type(exc).__name__}",
                 error=exc,
                 error_type=type(exc).__name__,
             )
+            for cmd in bot_commands:
+                logger.debug(f"  command: {cmd.command} - {cmd.description}")
+
         # Retry once after a short delay (handles timing/permission flap)
         await asyncio.sleep(2)
         try:
             await self._app.bot.set_my_commands(bot_commands)
-            logger.info("commands menu set (retry)", count=len(bot_commands))
+            logger.info(f"commands menu set (retry): {len(bot_commands)} entries")
         except Exception as exc2:
             logger.error(
                 "failed to set commands menu after retry",
