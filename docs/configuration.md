@@ -34,7 +34,7 @@
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `work_dir` | str | `"."` | `gemini` 命令的工作目录 |
+| `work_dir` | str | `"."` | `gemini` 命令的工作目录；同时作为 `.gemini/commands/` 和 `.gemini/skills/` 的自动加载根目录 |
 | `model` | str | `""` | 模型名，空字符串 = CLI 默认 |
 | `mode` | str | `"default"` | 工具调用审批模式（见下表） |
 | `api_key` | str | `""` | Gemini API Key，也可用环境变量 `GEMINI_API_KEY` |
@@ -93,7 +93,7 @@
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `dirs` | list[str] | `[]` | Skill 目录列表，每个目录下按 `<name>/SKILL.md` 结构组织 |
+| `dirs` | list[str] | `[]` | **额外** Skill 目录列表；`<work_dir>/.gemini/skills/` 始终自动加载，无需在此列出 |
 
 ## 最小配置
 

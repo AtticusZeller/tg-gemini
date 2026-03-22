@@ -270,7 +270,7 @@ Current model: (default)
 
 ## 自定义 Commands
 
-从 `<work_dir>/.gemini/commands/*.toml` 加载。
+从 `<work_dir>/.gemini/commands/` 自动加载（`work_dir` 来自 `[gemini].work_dir` 配置）。
 
 ### 目录结构
 
@@ -280,8 +280,10 @@ work_dir/
     └── commands/
         ├── review.toml       → /review
         └── git/
-            └── commit.toml   → /git-commit
+            └── commit.toml   → /git_commit
 ```
+
+> 嵌套路径中的 `/` 和 `:` 统一用 `_` 连接。
 
 ### TOML 格式
 
@@ -306,16 +308,19 @@ You are an expert code reviewer. Review this:
 
 ## Skills
 
-从 `<skill_dir>/<name>/SKILL.md` 加载。
+从 `<work_dir>/.gemini/skills/` **自动加载**，无需额外配置（与 Commands 同一 `work_dir`）。
+可通过 `[skills].dirs` 追加额外目录。
 
 ### 目录结构
 
 ```
-~/.tg-gemini/skills/
-├── review/
-│   └── SKILL.md
-└── refactor/
-    └── SKILL.md
+work_dir/
+└── .gemini/
+    └── skills/
+        ├── review/
+        │   └── SKILL.md
+        └── refactor/
+            └── SKILL.md
 ```
 
 ### SKILL.md 格式
@@ -334,13 +339,13 @@ You are an expert code reviewer. Review the provided code:
 Provide actionable feedback.
 ```
 
-### 加载 Skills
+### 追加额外 Skill 目录（可选）
 
-在 `config.toml` 中配置：
+默认已自动加载 `<work_dir>/.gemini/skills/`，如需追加其他目录：
 
 ```toml
 [skills]
-dirs = ["~/.tg-gemini/skills"]
+dirs = ["~/.tg-gemini/skills", "/path/to/more/skills"]
 ```
 
 ---
@@ -348,7 +353,9 @@ dirs = ["~/.tg-gemini/skills"]
 ## Commands 和 Skills 优先级
 
 1. **内置命令** — `/new`, `/help`, `/list` 等（最高优先级）
-2. **Commands** — `.gemini/commands/*.toml`
-3. **Skills** — `skill_dirs/*/SKILL.md`
+2. **Commands** — `<work_dir>/.gemini/commands/`
+3. **Skills** — `<work_dir>/.gemini/skills/` + `[skills].dirs` 追加目录
+
+**命令名规范化**：所有非 `[a-z0-9]` 字符统一替换为 `_`（如 `git/commit.toml` → `/git_commit`），确保符合 Telegram 命令格式要求。
 
 使用 `/commands reload` 重新加载所有 Commands 和 Skills，并刷新 Telegram 命令菜单。

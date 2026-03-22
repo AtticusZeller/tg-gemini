@@ -40,6 +40,11 @@ tg-gemini 是一个极简中间件，单向链路：
 │  │card.py   │  │ratelimit │  │dedup.py  │              │
 │  │卡片 UI   │  │速率限制   │  │消息去重   │              │
 │  └──────────┘  └──────────┘  └──────────┘              │
+│                                                         │
+│  ┌────────────────┐  ┌──────────────────┐              │
+│  │ commands.py    │  │ skills.py        │              │
+│  │ .gemini/cmds   │  │ .gemini/skills   │              │
+│  └────────────────┘  └──────────────────┘              │
 └─────────────────────────────────────────────────────────┘
          │                              ▲
          ▼                              │
@@ -113,6 +118,8 @@ src/tg_gemini/
 ├── config.py            # pydantic v2 TOML 配置，frozen + extra=forbid
 ├── engine.py            # 消息路由、命令分发、事件循环、回调处理
 ├── gemini.py            # GeminiAgent + GeminiSession（子进程 + JSONL 解析）
+├── commands.py          # CommandLoader：自动加载 .gemini/commands/*.toml
+├── skills.py            # SkillRegistry：自动加载 .gemini/skills/*/SKILL.md
 ├── markdown.py          # Obsidian MD → Telegram HTML 转换器
 ├── models.py            # 共享数据类：Event、Message、ReplyContext 等
 ├── i18n.py              # 中英双语消息（EN/ZH）
@@ -123,7 +130,7 @@ src/tg_gemini/
 ├── ratelimit.py         # 滑动窗口速率限制器
 └── dedup.py             # TTL 消息去重
 
-tests/                   # 662 个测试，98.95% 覆盖率
+tests/                   # 717 个测试，98.52% 覆盖率
 ├── test_config.py
 ├── test_engine.py
 ├── test_gemini.py
@@ -136,7 +143,9 @@ tests/                   # 662 个测试，98.95% 覆盖率
 ├── test_cli.py
 ├── test_card.py
 ├── test_ratelimit.py
-└── test_dedup.py
+├── test_dedup.py
+├── test_commands.py
+└── test_skills.py
 ```
 
 ## 关键设计决策

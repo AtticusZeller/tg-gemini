@@ -114,8 +114,8 @@ CLI (cli.py / typer)
         │     └── GeminiSession        # subprocess + JSONL stream parser
         ├── SessionManager              # per-user session state (JSON-persisted)
         ├── StreamPreview               # throttled streaming message edits
-        ├── SkillRegistry               # loads SKILL.md from skill_dirs
-        ├── CommandLoader               # loads .gemini/commands/*.toml
+        ├── SkillRegistry               # auto-loads from <work_dir>/.gemini/skills/; extra dirs via [skills].dirs
+        ├── CommandLoader               # auto-loads from <work_dir>/.gemini/commands/*.toml
         └── I18n                        # EN/ZH translations
 ```
 
@@ -137,8 +137,9 @@ CLI (cli.py / typer)
 - **`allow_from`**: `"*"` (open) or comma-separated Telegram user IDs
 - **Gemini modes**: `default`, `auto_edit`, `yolo` (`-y`), `plan` — mapped to CLI flags in `GeminiSession`
 - **Attachments**: images/files saved to `tempfile.gettempdir()` as `@file` references in prompt; cleaned up after subprocess exits
-- **Skills**: Loaded from `<skill_dir>/<name>/SKILL.md` with YAML frontmatter; wrapped in a prompt that instructs the agent to execute the skill
-- **Commands**: Loaded from `<work_dir>/.gemini/commands/*.toml`; support `{{args}}`, `@{filepath}`, `!{cmd}` syntax
+- **Skills**: Auto-loaded from `<work_dir>/.gemini/skills/<name>/SKILL.md`; optional extra dirs via `[skills].dirs` in config. YAML frontmatter (`name`, `description`) optional; body is the skill prompt.
+- **Commands**: Auto-loaded from `<work_dir>/.gemini/commands/**/*.toml`; nested paths flatten with `_` (e.g. `git/commit.toml` → `/git_commit`). Support `{{args}}`, `@{filepath}`, `!{cmd}` syntax.
+- **Command name normalization**: All custom command/skill names are normalized to `[a-z0-9_]` (via `_to_tg_command`) before registering in the Telegram menu — hyphens, colons, slashes all become `_`.
 
 ### Config Schema (`config.toml`)
 
@@ -168,7 +169,7 @@ interval_ms = 1500
 min_delta_chars = 30
 max_chars = 2000
 
-# Skill directories (optional)
+# Extra skill directories (optional; default .gemini/skills/ auto-loaded from work_dir)
 [skills]
 dirs = ["~/.tg-gemini/skills"]
 ```
@@ -178,13 +179,22 @@ dirs = ["~/.tg-gemini/skills"]
 | Command | Action |
 |---|---|
 | `/new` | Reset to a new Gemini session |
+| `/list [query]` | List sessions (fuzzy filter with query) |
+| `/switch <id\|name>` | Switch active session |
+| `/current` | Show current session info |
+| `/history` | Show recent conversation history |
+| `/name <new_name>` | Rename current session |
+| `/delete` | Enter delete-session mode |
+| `/status` | Show bot/session status |
 | `/model [name]` | List or switch model |
 | `/mode [mode]` | List or switch approval mode |
-| `/stop` | Notify stop (best-effort; no subprocess kill in v1) |
+| `/lang [en\|zh]` | Switch UI language |
+| `/quiet` | Toggle quiet mode (suppress tool output) |
+| `/stop` | Notify stop (best-effort; no subprocess kill) |
 | `/help` | Show command list |
 | `/commands reload` | Reload Commands and Skills, refresh Telegram menu |
 
-**Command priority**: Built-in commands → Commands (`.gemini/commands/*.toml`) → Skills (`skill_dirs/*/SKILL.md`)
+**Command priority**: Built-in commands → Commands (`<work_dir>/.gemini/commands/`) → Skills (`<work_dir>/.gemini/skills/` + extra dirs)
 
 ### JSONL Event Mapping
 
