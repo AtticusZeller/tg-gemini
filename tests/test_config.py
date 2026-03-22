@@ -39,6 +39,21 @@ class TestTelegramConfig:
         config = TelegramConfig(token="test_token", allow_from="user1,user2")
         assert config.allow_from == "user1,user2"
 
+    def test_group_reply_all_default(self) -> None:
+        config = TelegramConfig(token="t")
+        assert config.group_reply_all is False
+
+    def test_share_session_in_channel_default(self) -> None:
+        config = TelegramConfig(token="t")
+        assert config.share_session_in_channel is False
+
+    def test_group_fields_custom(self) -> None:
+        config = TelegramConfig(
+            token="t", group_reply_all=True, share_session_in_channel=True
+        )
+        assert config.group_reply_all is True
+        assert config.share_session_in_channel is True
+
 
 class TestGeminiConfig:
     """Tests for GeminiConfig model."""

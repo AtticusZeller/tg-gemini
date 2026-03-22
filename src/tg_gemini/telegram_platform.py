@@ -45,9 +45,19 @@ def _is_allowed(allow_from: str, user_id: str) -> bool:
 class TelegramPlatform:
     """Manages Telegram polling, message routing, and sending."""
 
-    def __init__(self, token: str, allow_from: str = "*") -> None:
+    def __init__(
+        self,
+        token: str,
+        allow_from: str = "*",
+        group_reply_all: bool = False,
+        share_session_in_channel: bool = False,
+    ) -> None:
         self._token = token
         self._allow_from = allow_from
+        self._group_reply_all = group_reply_all
+        self._share_session_in_channel = share_session_in_channel
+        self._bot_id: str = ""
+        self._bot_username: str = ""
         self._app: Application[Any, Any, Any, Any, Any, Any] | None = None
         # exact-match callbacks: data → handler(data, user_id, chat_id, message_id)
         self._callback_handlers: dict[
@@ -81,7 +91,30 @@ class TelegramPlatform:
 
         user_name = from_.username or f"{from_.first_name} {from_.last_name}".strip()
         chat_id = msg.chat_id
-        session_key = f"telegram:{chat_id}:{from_.id}"
+        is_group = msg.chat.type in ("group", "supergroup")
+
+        # Group chat filtering: skip non-directed messages unless group_reply_all
+        if is_group and not self._group_reply_all:
+            text = msg.text or msg.caption or ""
+            if not text.startswith("/"):
+                mentioned = self._bot_username and f"@{self._bot_username}" in text
+                reply_to = msg.reply_to_message
+                replied_to_bot = (
+                    reply_to is not None
+                    and reply_to.from_user is not None
+                    and self._bot_id
+                    and str(reply_to.from_user.id) == self._bot_id
+                )
+                if not mentioned and not replied_to_bot:
+                    logger.debug("TelegramPlatform: group message not directed at bot")
+                    return
+
+        # Session key: shared across group or per-user
+        if is_group and self._share_session_in_channel:
+            session_key = f"telegram:{chat_id}:shared"
+        else:
+            session_key = f"telegram:{chat_id}:{from_.id}"
+
         reply_ctx = ReplyContext(chat_id=chat_id, message_id=msg.message_id)
 
         if self._app is None:
@@ -196,6 +229,14 @@ class TelegramPlatform:
             await bot.get_updates(offset=-1, timeout=0)
         except Exception as exc:
             logger.warning("TelegramPlatform: failed to drain old updates", error=exc)
+
+        # Cache bot identity for group-chat mention filtering
+        try:
+            me = await app.bot.get_me()
+            self._bot_id = str(me.id)
+            self._bot_username = me.username or ""
+        except Exception as exc:
+            logger.warning("TelegramPlatform: failed to fetch bot info", error=exc)
 
         app.add_handler(
             MessageHandler(filters.ALL & ~filters.COMMAND, self._handle_update)

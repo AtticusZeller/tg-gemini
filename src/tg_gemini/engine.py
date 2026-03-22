@@ -51,6 +51,7 @@ class Engine:
         self._i18n = i18n
         self._rate_limiter = rate_limiter or RateLimiter()
         self._dedup = dedup or MessageDedup()
+        self._share_session = config.telegram.share_session_in_channel
         self._queues: dict[str, asyncio.Queue[Message]] = {}
         self._active_gemini: dict[str, GeminiSession] = {}
         self._interactive: dict[str, _InteractiveState] = {}
@@ -301,6 +302,12 @@ class Engine:
             ctx: ReplyContext = msg.reply_ctx
             await self._platform.send(ctx, content)
 
+    def _session_key(self, chat_id: int, user_id: str) -> str:
+        """Build session key respecting share_session_in_channel config."""
+        if self._share_session:
+            return f"telegram:{chat_id}:shared"
+        return f"telegram:{chat_id}:{user_id}"
+
     # ── callback routing ──────────────────────────────────────────────────
 
     async def _handle_cmd_callback(
@@ -311,7 +318,7 @@ class Engine:
         parts = cmd_with_args.split(maxsplit=1)
         cmd = parts[0].lower()
         args = parts[1].strip() if len(parts) > 1 else ""
-        session_key = f"telegram:{chat_id}:{user_id}"
+        session_key = self._session_key(chat_id, user_id)
         ctx = ReplyContext(chat_id=chat_id, message_id=message_id)
 
         match cmd:
@@ -329,7 +336,7 @@ class Engine:
     ) -> None:
         """Execute action and re-render. data = 'act:cmd:/lang zh'"""
         inner = data[4:]  # strip "act:"
-        session_key = f"telegram:{chat_id}:{user_id}"
+        session_key = self._session_key(chat_id, user_id)
         ctx = ReplyContext(chat_id=chat_id, message_id=message_id)
 
         if inner.startswith("cmd:"):
@@ -393,7 +400,7 @@ class Engine:
             return
         action = parts[1]
         target = parts[2]
-        session_key = f"telegram:{chat_id}:{user_id}"
+        session_key = self._session_key(chat_id, user_id)
         ctx = ReplyContext(chat_id=chat_id, message_id=message_id)
 
         if action == "delete":

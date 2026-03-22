@@ -1,6 +1,7 @@
 """Tests for engine.py: Engine message routing and command dispatch."""
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from tg_gemini.config import (
@@ -1557,3 +1558,58 @@ async def test_switch_by_full_uuid_via_callback() -> None:
     await engine._handle_act_callback(f"act:cmd:/switch {s1.id}", "2", 1, 55)
     assert engine._sessions.active_session_id(key) == s1.id
     platform.edit_card.assert_called_once()
+
+
+# --- v3: callback session key respects share_session_in_channel ---
+
+
+async def test_callback_uses_per_user_key_by_default() -> None:
+    """Default config: callback session_key = telegram:{chat_id}:{user_id}."""
+    engine, _agent, platform = _make_engine()
+    engine._sessions.new_session("telegram:5:10")
+
+    received_keys: list[str] = []
+
+    original_build = engine._build_list_card
+
+    def capturing_build(session_key: str, args: str) -> "Any":
+        received_keys.append(session_key)
+        return original_build(session_key, args)
+
+    engine._build_list_card = capturing_build  # type: ignore[method-assign]
+    await engine._handle_cmd_callback("cmd:/list", "10", 5, 42)
+    assert received_keys == ["telegram:5:10"]
+
+
+async def test_callback_uses_shared_key_when_configured() -> None:
+    """share_session_in_channel=True: callback session_key = telegram:{chat_id}:shared."""
+    from tg_gemini.config import AppConfig, TelegramConfig
+
+    cfg = AppConfig(telegram=TelegramConfig(token="t", share_session_in_channel=True))
+    engine, _agent, platform = _make_engine(config=cfg)
+    engine._sessions.new_session("telegram:5:shared")
+
+    received_keys: list[str] = []
+
+    original_build = engine._build_list_card
+
+    def capturing_build(session_key: str, args: str) -> "Any":
+        received_keys.append(session_key)
+        return original_build(session_key, args)
+
+    engine._build_list_card = capturing_build  # type: ignore[method-assign]
+    await engine._handle_cmd_callback("cmd:/list", "10", 5, 42)
+    assert received_keys == ["telegram:5:shared"]
+
+
+async def test_session_key_helper_per_user() -> None:
+    engine, _, _ = _make_engine()
+    assert engine._session_key(10, "42") == "telegram:10:42"
+
+
+async def test_session_key_helper_shared() -> None:
+    from tg_gemini.config import AppConfig, TelegramConfig
+
+    cfg = AppConfig(telegram=TelegramConfig(token="t", share_session_in_channel=True))
+    engine, _, _ = _make_engine(config=cfg)
+    assert engine._session_key(10, "42") == "telegram:10:shared"

@@ -70,7 +70,10 @@ def start(
     )
 
     platform = TelegramPlatform(
-        token=cfg.telegram.token, allow_from=cfg.telegram.allow_from
+        token=cfg.telegram.token,
+        allow_from=cfg.telegram.allow_from,
+        group_reply_all=cfg.telegram.group_reply_all,
+        share_session_in_channel=cfg.telegram.share_session_in_channel,
     )
 
     i18n = I18n(lang=lang)

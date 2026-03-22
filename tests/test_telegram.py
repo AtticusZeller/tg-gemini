@@ -345,6 +345,8 @@ def _make_update(
     has_photo: bool = False,
     has_document: bool = False,
     message_id: int = 10,
+    chat_type: str = "private",
+    reply_to_user_id: int | None = None,
 ) -> MagicMock:
     import time as t
 
@@ -356,6 +358,9 @@ def _make_update(
     msg.caption = None
     msg.date = MagicMock()
     msg.date.timestamp = MagicMock(return_value=ts)
+    chat = MagicMock()
+    chat.type = chat_type
+    msg.chat = chat
     user = MagicMock()
     user.id = user_id
     user.username = username
@@ -364,6 +369,13 @@ def _make_update(
     msg.from_user = user
     msg.photo = []
     msg.document = None
+    if reply_to_user_id is not None:
+        reply_user = MagicMock()
+        reply_user.id = reply_to_user_id
+        msg.reply_to_message = MagicMock()
+        msg.reply_to_message.from_user = reply_user
+    else:
+        msg.reply_to_message = None
     if has_photo:
         photo = MagicMock()
         photo.file_id = "file123"
@@ -956,3 +968,255 @@ async def test_no_matching_prefix_handler_no_raise() -> None:
     update.callback_query = query
 
     await platform._handle_callback(update, None)  # Should not raise
+
+
+# --- v3: group chat filtering and session key ---
+
+
+def _make_group_platform(
+    group_reply_all: bool = False,
+    share_session_in_channel: bool = False,
+    bot_id: str = "99",
+    bot_username: str = "mybot",
+) -> tuple[TelegramPlatform, MagicMock]:
+    platform, mock_bot = _make_platform_with_app()
+    platform._group_reply_all = group_reply_all
+    platform._share_session_in_channel = share_session_in_channel
+    platform._bot_id = bot_id
+    platform._bot_username = bot_username
+    return platform, mock_bot
+
+
+async def test_group_message_with_reply_all_enabled() -> None:
+    """group_reply_all=True: plain group message reaches handler."""
+    platform, _ = _make_group_platform(group_reply_all=True)
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    update = _make_update(text="just a message", chat_type="group")
+    await platform._handle_update(update, None)
+    assert len(received) == 1
+
+
+async def test_group_message_reply_all_false_no_mention_filtered() -> None:
+    """group_reply_all=False, no @mention, no reply-to-bot -> ignored."""
+    platform, _ = _make_group_platform(group_reply_all=False)
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    update = _make_update(text="just talking", chat_type="group")
+    await platform._handle_update(update, None)
+    assert len(received) == 0
+
+
+async def test_group_message_with_at_mention_processed() -> None:
+    """group_reply_all=False but @bot mentioned -> processed."""
+    platform, _ = _make_group_platform(group_reply_all=False, bot_username="mybot")
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    update = _make_update(text="hey @mybot what's up", chat_type="group")
+    await platform._handle_update(update, None)
+    assert len(received) == 1
+
+
+async def test_group_message_reply_to_bot_processed() -> None:
+    """group_reply_all=False but replying to bot's message -> processed."""
+    platform, _ = _make_group_platform(group_reply_all=False, bot_id="99")
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    # reply_to_user_id=99 matches bot_id="99"
+    update = _make_update(text="ok thanks", chat_type="group", reply_to_user_id=99)
+    await platform._handle_update(update, None)
+    assert len(received) == 1
+
+
+async def test_group_command_always_processed() -> None:
+    """Commands (/cmd) in group are always processed even without @mention."""
+    platform, _ = _make_group_platform(group_reply_all=False)
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    update = _make_update(text="/help", chat_type="group")
+    await platform._handle_update(update, None)
+    assert len(received) == 1
+
+
+async def test_supergroup_same_as_group_filtering() -> None:
+    """Supergroup chat type triggers the same filtering as group."""
+    platform, _ = _make_group_platform(group_reply_all=False)
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    update = _make_update(text="hello", chat_type="supergroup")
+    await platform._handle_update(update, None)
+    assert len(received) == 0
+
+
+async def test_private_chat_unaffected_by_group_filter() -> None:
+    """Private chat is never filtered regardless of group_reply_all setting."""
+    platform, _ = _make_group_platform(group_reply_all=False)
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    update = _make_update(text="private message", chat_type="private")
+    await platform._handle_update(update, None)
+    assert len(received) == 1
+
+
+async def test_share_session_uses_shared_key() -> None:
+    """share_session_in_channel=True sets session_key to 'telegram:{chat_id}:shared'."""
+    platform, _ = _make_group_platform(
+        group_reply_all=True, share_session_in_channel=True
+    )
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    update = _make_update(chat_id=100, user_id=42, text="hi", chat_type="group")
+    await platform._handle_update(update, None)
+    assert len(received) == 1
+    assert received[0].session_key == "telegram:100:shared"
+
+
+async def test_no_share_session_uses_per_user_key() -> None:
+    """share_session_in_channel=False: session_key includes user_id."""
+    platform, _ = _make_group_platform(
+        group_reply_all=True, share_session_in_channel=False
+    )
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    update = _make_update(chat_id=100, user_id=42, text="hi", chat_type="group")
+    await platform._handle_update(update, None)
+    assert len(received) == 1
+    assert received[0].session_key == "telegram:100:42"
+
+
+async def test_group_filter_empty_bot_username_skips_mention_check() -> None:
+    """When bot_username is empty, @mention check skipped; no reply -> filtered."""
+    platform, _ = _make_group_platform(
+        group_reply_all=False, bot_id="99", bot_username=""
+    )
+    received: list[CoreMessage] = []
+
+    async def handler(m: CoreMessage) -> None:
+        received.append(m)
+
+    platform._message_handler = handler
+    update = _make_update(text="hello there", chat_type="group")
+    await platform._handle_update(update, None)
+    assert len(received) == 0
+
+
+async def test_start_caches_bot_info() -> None:
+    """start() calls get_me() and caches bot_id and bot_username."""
+    import contextlib
+
+    platform = TelegramPlatform(token="tok:TOKEN", allow_from="*")
+    mock_app = AsyncMock()
+    mock_me = MagicMock()
+    mock_me.id = 12345
+    mock_me.username = "testbot"
+    mock_app.bot = AsyncMock()
+    mock_app.bot.get_updates = AsyncMock()
+    mock_app.bot.get_me = AsyncMock(return_value=mock_me)
+    mock_app.add_handler = MagicMock()
+    mock_app.start = AsyncMock()
+    mock_app.stop = AsyncMock()
+    mock_app.updater = AsyncMock()
+    mock_app.updater.start_polling = AsyncMock()
+    mock_app.updater.stop = AsyncMock()
+    mock_app.__aenter__ = AsyncMock(return_value=mock_app)
+    mock_app.__aexit__ = AsyncMock(return_value=False)
+
+    from unittest.mock import patch as _patch
+
+    def mock_build() -> Any:
+        return mock_app
+
+    with _patch("tg_gemini.telegram_platform.Application") as mock_cls:
+        mock_cls.builder.return_value.token.return_value.build = mock_build
+
+        async def stopper() -> None:
+            await asyncio.sleep(0.05)
+            await platform.stop()
+
+        task = asyncio.create_task(stopper())
+        try:
+            await platform.start(AsyncMock())
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert platform._bot_id == "12345"
+    assert platform._bot_username == "testbot"
+
+
+async def test_start_get_me_failure_graceful() -> None:
+    """start() handles get_me() failure — bot_id stays empty."""
+    import contextlib
+
+    platform = TelegramPlatform(token="tok:TOKEN", allow_from="*")
+    mock_app = AsyncMock()
+    mock_app.bot = AsyncMock()
+    mock_app.bot.get_updates = AsyncMock()
+    mock_app.bot.get_me = AsyncMock(side_effect=Exception("network error"))
+    mock_app.add_handler = MagicMock()
+    mock_app.start = AsyncMock()
+    mock_app.stop = AsyncMock()
+    mock_app.updater = AsyncMock()
+    mock_app.updater.start_polling = AsyncMock()
+    mock_app.updater.stop = AsyncMock()
+    mock_app.__aenter__ = AsyncMock(return_value=mock_app)
+    mock_app.__aexit__ = AsyncMock(return_value=False)
+
+    from unittest.mock import patch as _patch
+
+    def mock_build() -> Any:
+        return mock_app
+
+    with _patch("tg_gemini.telegram_platform.Application") as mock_cls:
+        mock_cls.builder.return_value.token.return_value.build = mock_build
+
+        async def stopper() -> None:
+            await asyncio.sleep(0.05)
+            await platform.stop()
+
+        task = asyncio.create_task(stopper())
+        try:
+            await platform.start(AsyncMock())
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert platform._bot_id == ""  # graceful fallback

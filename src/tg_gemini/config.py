@@ -36,6 +36,8 @@ class _StrictModel(BaseModel):
 class TelegramConfig(_StrictModel):
     token: str
     allow_from: str = "*"
+    group_reply_all: bool = False
+    share_session_in_channel: bool = False
 
 
 class GeminiConfig(_StrictModel):
