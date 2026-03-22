@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.7 - 2026-03-22
+
+### 🚀 Features
+
+- *(v4)* Add Skills/Commands system and Telegram menu
+
+### 📚 Documentation
+
+- Update docs for Skills/Commands system and add pyyaml dependency
+
 ## 0.0.6 - 2026-03-22
 
 ### 🐛 Bug Fixes
