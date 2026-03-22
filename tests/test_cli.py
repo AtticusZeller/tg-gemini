@@ -65,9 +65,8 @@ def test_start_default_config_path_missing(
 
 def test_start_with_language_zh(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
-    config_file.write_text(
-        '[telegram]\ntoken = "123:ABC"\n\n[gemini]\n\nlanguage = "zh"\n'
-    )
+    # language must be declared before any section header
+    config_file.write_text('language = "zh"\n\n[telegram]\ntoken = "123:ABC"\n\n[gemini]\n')
 
     with patch("asyncio.run", side_effect=_ki_run):
         result = runner.invoke(app, ["--config", str(config_file)])
@@ -75,15 +74,12 @@ def test_start_with_language_zh(tmp_path: Path) -> None:
 
 
 def test_start_with_language_invalid(tmp_path: Path) -> None:
-    """Unknown language falls back to EN."""
+    """Invalid language (not in Literal) is rejected at config load."""
     config_file = tmp_path / "config.toml"
-    config_file.write_text(
-        '[telegram]\ntoken = "123:ABC"\n\n[gemini]\n\nlanguage = "fr"\n'
-    )
+    config_file.write_text('language = "fr"\n\n[telegram]\ntoken = "123:ABC"\n\n[gemini]\n')
 
-    with patch("asyncio.run", side_effect=_ki_run):
-        result = runner.invoke(app, ["--config", str(config_file)])
-        assert result.exit_code == 0
+    result = runner.invoke(app, ["--config", str(config_file)])
+    assert result.exit_code != 0
 
 
 def test_start_short_flag_missing(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from typing import Any
 
 from loguru import logger
 
+from tg_gemini.config import GeminiMode
 from tg_gemini.models import (
     Event,
     EventType,
@@ -21,14 +22,15 @@ from tg_gemini.models import (
 __all__ = ["GeminiAgent", "GeminiSession"]
 
 _KNOWN_MODELS: list[ModelOption] = [
+    ModelOption(name="gemini-3.1-pro-preview", desc="Gemini 3.1 Pro Preview"),
+    ModelOption(name="gemini-3-flash-preview", desc="Gemini 3 Flash Preview"),
     ModelOption(name="gemini-2.5-pro", desc="Gemini 2.5 Pro"),
     ModelOption(name="gemini-2.5-flash", desc="Gemini 2.5 Flash"),
     ModelOption(name="gemini-2.5-flash-lite", desc="Gemini 2.5 Flash Lite"),
-    ModelOption(name="gemini-2.0-flash", desc="Gemini 2.0 Flash"),
 ]
 
 
-def _normalize_mode(raw: str) -> str:
+def _normalize_mode(raw: str) -> GeminiMode:
     match raw.lower().strip():
         case "yolo" | "auto" | "force":
             return "yolo"
@@ -177,7 +179,7 @@ class GeminiSession:
         cmd: str,
         work_dir: str,
         model: str,
-        mode: str,
+        mode: GeminiMode,
         api_key: str,
         timeout_mins: int,
         resume_id: str = "",
@@ -185,7 +187,7 @@ class GeminiSession:
         self._cmd = cmd
         self._work_dir = work_dir
         self._model = model
-        self._mode = _normalize_mode(mode)
+        self._mode: GeminiMode = mode
         self._api_key = api_key
         self._timeout_secs = timeout_mins * 60 if timeout_mins > 0 else None
         self._session_id = resume_id
@@ -500,14 +502,14 @@ class GeminiAgent:
         self,
         work_dir: str = ".",
         model: str = "",
-        mode: str = "default",
+        mode: GeminiMode = "default",
         cmd: str = "gemini",
         api_key: str = "",
         timeout_mins: int = 0,
     ) -> None:
         self._work_dir = work_dir
         self._model = model
-        self._mode = mode
+        self._mode: GeminiMode = _normalize_mode(mode)
         self._cmd = cmd
         self._api_key = api_key
         self._timeout_mins = timeout_mins
@@ -521,14 +523,14 @@ class GeminiAgent:
         self._model = value
 
     @property
-    def mode(self) -> str:
+    def mode(self) -> GeminiMode:
         return self._mode
 
     @mode.setter
     def mode(self, value: str) -> None:
-        self._mode = value
+        self._mode = _normalize_mode(value)
 
-    def start_session(self, resume_id: str = "") -> GeminiSession:
+    def start_session(self, resume_id: str = "") -> "GeminiSession":
         """Create a new GeminiSession, optionally resuming by session ID."""
         return GeminiSession(
             cmd=self._cmd,

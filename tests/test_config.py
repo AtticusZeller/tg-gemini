@@ -16,6 +16,8 @@ from tg_gemini.config import (
     resolve_config_path,
 )
 
+# ── strict validation ──────────────────────────────────────────────────────
+
 
 class TestTelegramConfig:
     """Tests for TelegramConfig model."""
@@ -173,6 +175,9 @@ class TestLoadConfig:
         """Test loading a valid TOML config file."""
         config_file = tmp_path / "config.toml"
         config_content = """
+data_dir = "~/.tg-gemini"
+language = "en"
+
 [telegram]
 token = "my_bot_token"
 allow_from = "user1,user2"
@@ -181,9 +186,6 @@ allow_from = "user1,user2"
 model = "gemini-pro"
 mode = "auto_edit"
 work_dir = "/tmp/work"
-
-data_dir = "~/.tg-gemini"
-language = "en"
 """
         config_file.write_text(config_content)
 
@@ -267,3 +269,92 @@ class TestResolveConfigPath:
 
         result = resolve_config_path(None)
         assert result == Path.home() / ".tg-gemini" / "config.toml"
+
+
+# ── Literal / constraint validation ───────────────────────────────────────
+
+
+class TestGeminiMode:
+    def test_valid_modes(self) -> None:
+        for mode in ("default", "auto_edit", "yolo", "plan"):
+            assert GeminiConfig(mode=mode).mode == mode  # type: ignore[arg-type]
+
+    def test_invalid_mode_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="mode"):
+            GeminiConfig(mode="turbo")  # type: ignore[arg-type]
+
+
+class TestLogLevel:
+    def test_valid_levels(self) -> None:
+        for lvl in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            assert LogConfig(level=lvl).level == lvl  # type: ignore[arg-type]
+
+    def test_invalid_level_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="level"):
+            LogConfig(level="VERBOSE")  # type: ignore[arg-type]
+
+
+class TestAppLanguage:
+    def test_valid_languages(self) -> None:
+        tg = TelegramConfig(token="t")
+        for lang in ("", "en", "zh"):
+            assert AppConfig(telegram=tg, language=lang).language == lang  # type: ignore[arg-type]
+
+    def test_invalid_language_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="language"):
+            AppConfig(telegram=TelegramConfig(token="t"), language="fr")  # type: ignore[arg-type]
+
+
+class TestNumericConstraints:
+    def test_timeout_mins_zero_allowed(self) -> None:
+        assert GeminiConfig(timeout_mins=0).timeout_mins == 0
+
+    def test_timeout_mins_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            GeminiConfig(timeout_mins=-1)
+
+    def test_thinking_max_len_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            DisplayConfig(thinking_max_len=0)
+
+    def test_tool_max_len_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            DisplayConfig(tool_max_len=-5)
+
+    def test_interval_ms_zero_allowed(self) -> None:
+        assert StreamPreviewConfig(interval_ms=0).interval_ms == 0
+
+    def test_max_chars_zero_allowed(self) -> None:
+        # 0 = no truncation
+        assert StreamPreviewConfig(max_chars=0).max_chars == 0
+
+    def test_max_chars_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            StreamPreviewConfig(max_chars=-1)
+
+
+class TestExtraFieldsForbidden:
+    def test_telegram_config_rejects_extra(self) -> None:
+        with pytest.raises(ValidationError):
+            TelegramConfig(token="t", unknown_field="x")  # type: ignore[call-arg]
+
+    def test_gemini_config_rejects_extra(self) -> None:
+        with pytest.raises(ValidationError):
+            GeminiConfig(unknown_key="x")  # type: ignore[call-arg]
+
+    def test_app_config_rejects_extra(self) -> None:
+        with pytest.raises(ValidationError):
+            AppConfig(telegram=TelegramConfig(token="t"), extra_key="x")  # type: ignore[call-arg]
+
+    def test_load_config_rejects_unknown_toml_key(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text('[telegram]\ntoken = "t"\n\n[gemini]\nunknown_key = "x"\n')
+        with pytest.raises(ValidationError):
+            load_config(cfg)
+
+
+class TestFrozenImmutability:
+    def test_config_is_immutable(self) -> None:
+        config = GeminiConfig(model="flash")
+        with pytest.raises(Exception):  # noqa: B017
+            config.model = "pro"  # type: ignore[misc]
