@@ -112,7 +112,9 @@ async def test_stop_no_app() -> None:
 def _make_platform_with_app() -> tuple[TelegramPlatform, MagicMock]:
     platform = TelegramPlatform(token="tok:TOKEN", allow_from="*")
     mock_app = MagicMock()
-    mock_bot = AsyncMock()
+    # Use MagicMock so mock_app.bot.bot is the same mock_bot (not a nested auto-mock)
+    mock_bot = MagicMock()
+    mock_bot.set_my_commands = AsyncMock()  # set on the exact object code accesses
     mock_app.bot = mock_bot
     platform._app = mock_app
     return platform, mock_bot
@@ -1220,3 +1222,40 @@ async def test_start_get_me_failure_graceful() -> None:
                 await task
 
     assert platform._bot_id == ""  # graceful fallback
+
+
+# --- set_commands_menu ---
+
+
+async def test_set_commands_menu_success() -> None:
+    platform, app = _make_platform_with_app()
+    app.set_my_commands = AsyncMock()
+    await platform.set_commands_menu([("help", "Show help"), ("new", "Start new")])
+    app.set_my_commands.assert_awaited_once()
+
+
+async def test_set_commands_menu_retry_on_failure() -> None:
+    """First call fails, second call (after 2s delay) succeeds."""
+    platform, app = _make_platform_with_app()
+    app.set_my_commands = AsyncMock(
+        side_effect=[Exception("403"), None]  # fail once, then succeed
+    )
+    await platform.set_commands_menu([("help", "Show help")])
+    assert app.set_my_commands.await_count == 2
+
+
+async def test_set_commands_menu_logs_error_after_retry_failure() -> None:
+    """Both calls fail; error is logged."""
+    platform, app = _make_platform_with_app()
+    app.set_my_commands = AsyncMock(side_effect=Exception("403"))
+    # Should not raise, just log
+    await platform.set_commands_menu([("help", "Show help")])
+    assert app.set_my_commands.await_count == 2
+
+
+async def test_set_commands_menu_no_app_returns_early() -> None:
+    """No bot connection → returns without calling API."""
+    platform, _ = _make_platform_with_app()
+    platform._app = None
+    # Should not crash
+    await platform.set_commands_menu([("help", "Show help")])

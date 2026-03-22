@@ -292,12 +292,28 @@ class TelegramPlatform:
         """Register the bot command list shown in the Telegram UI."""
         if self._app is None:
             return
+        bot_commands = [BotCommand(name, desc[:100]) for name, desc in commands]
         try:
-            bot_commands = [BotCommand(name, desc[:100]) for name, desc in commands]
             await self._app.bot.set_my_commands(bot_commands)
             logger.info("commands menu set", count=len(bot_commands))
+            return
         except Exception as exc:
-            logger.warning("failed to set commands menu", error=exc)
+            logger.warning(
+                "failed to set commands menu, retrying...",
+                error=exc,
+                error_type=type(exc).__name__,
+            )
+        # Retry once after a short delay (handles timing/permission flap)
+        await asyncio.sleep(2)
+        try:
+            await self._app.bot.set_my_commands(bot_commands)
+            logger.info("commands menu set (retry)", count=len(bot_commands))
+        except Exception as exc2:
+            logger.error(
+                "failed to set commands menu after retry",
+                error=exc2,
+                error_type=type(exc2).__name__,
+            )
 
     async def reply(self, ctx: ReplyContext, content: str) -> None:
         """Send a reply, converting markdown to HTML. Splits if >4096 chars."""
