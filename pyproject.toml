@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name            = "tg-gemini"
-version         = "0.0.7"
+version         = "0.0.8"
 description     = "Telegram bot middleware bridging Gemini CLI headless mode"
 readme          = "README.md"
 requires-python = ">=3.12"
@@ -214,7 +214,7 @@ topo_order     = false
 sort_commits   = "oldest"
 
 [tool.bumpversion]
-current_version        = "0.0.7"
+current_version        = "0.0.8"
 parse                  = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize              = ["{major}.{minor}.{patch}"]
 search                 = "{current_version}"

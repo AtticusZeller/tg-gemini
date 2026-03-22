@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.8 - 2026-03-22
+
+### 🐛 Bug Fixes
+
+- *(telegram)* Retry set_commands_menu on failure with 2s delay
+
+### 📚 Documentation
+
+- Update fix-set-commands-menu plan with implemented solution
+
 ## 0.0.7 - 2026-03-22
 
 ### 🚀 Features
