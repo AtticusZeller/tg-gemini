@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.2 - 2026-03-22
+
+### 🐛 Bug Fixes
+
+- *(ci)* Update Python versions in workflows and project files
+
+### ⚙️ Miscellaneous Tasks
+
+- Add changelog and fix dev.sh permissions
+
 ## 0.0.1 - 2026-03-22
 
 ### 🚀 Features
