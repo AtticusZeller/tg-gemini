@@ -1440,3 +1440,120 @@ async def test_build_delete_select_card_selected() -> None:
     card = engine._build_delete_select_card("u")
     text = card.render_text()
     assert "☑" in text
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — P6: delete E2E, P7: switch-by-ID
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_e2e_full_flow() -> None:
+    """Full delete flow: /delete → toggle → confirm → session is gone."""
+    engine, _agent, platform = _make_engine()
+    key = "telegram:1:2"
+
+    # Create two sessions
+    s1 = engine._sessions.new_session(key, name="Keep This")
+    s2 = engine._sessions.new_session(key, name="Delete This")
+
+    # Step 1: /delete — shows selection card
+    msg = _make_message()
+    await engine.handle_command(msg, "/delete")
+    platform.send_card.assert_called_once()
+    istate = engine._interactive[key]
+    assert istate.delete_phase == "select"
+    assert istate.delete_selected == set()
+
+    # Step 2: toggle s2 via sel: callback
+    await engine._handle_sel_callback(f"sel:delete:{s2.id}", "2", 1, 42)
+    assert s2.id in istate.delete_selected
+    # s1 not selected
+    assert s1.id not in istate.delete_selected
+
+    # Step 3: confirm via act: callback
+    platform.edit_card.reset_mock()
+    await engine._handle_act_callback("act:cmd:/delete confirm", "2", 1, 42)
+    platform.edit_card.assert_called_once()
+
+    # s2 must be deleted; s1 must still exist
+    assert engine._sessions.find_session(s2.id) is None
+    assert engine._sessions.find_session(s1.id) is not None
+
+    # Interactive state must be cleaned up
+    assert istate.delete_selected == set()
+    assert istate.delete_phase == ""
+
+
+async def test_delete_e2e_cancel_flow() -> None:
+    """Delete flow cancel: session is NOT deleted."""
+    engine, _agent, platform = _make_engine()
+    key = "telegram:1:2"
+    s = engine._sessions.new_session(key, name="Mine")
+
+    msg = _make_message()
+    await engine.handle_command(msg, "/delete")
+
+    await engine._handle_sel_callback(f"sel:delete:{s.id}", "2", 1, 99)
+    istate = engine._interactive[key]
+    assert s.id in istate.delete_selected
+
+    await engine._handle_act_callback("act:cmd:/delete cancel", "2", 1, 99)
+    # Session still exists
+    assert engine._sessions.find_session(s.id) is not None
+    assert istate.delete_selected == set()
+
+
+async def test_switch_by_session_id_not_stale_index() -> None:
+    """P1 fix: Switch button uses session ID so reordering doesn't cause wrong switch."""
+    engine, _agent, platform = _make_engine()
+    key = "telegram:1:2"
+
+    # Create sessions with controlled timestamps
+    from datetime import UTC, datetime
+
+    s1 = engine._sessions.new_session(key, name="Older")
+    s2 = engine._sessions.new_session(key, name="Newer")
+    # s2 is most recently updated (active), s1 is older
+    s2.updated_at = datetime(2026, 3, 22, 12, 0, tzinfo=UTC)
+    s1.updated_at = datetime(2026, 3, 22, 10, 0, tzinfo=UTC)
+
+    # Build list card — s2 is index 1 (most recent), s1 is index 2
+    card = engine._build_list_card(key, "")
+    rows = card.collect_buttons()
+    # The Switch button for s1 (index 2) should contain s1.id, not "2"
+    switch_btns = [
+        btn for row in rows for btn in row if "switch" in btn.callback_data.lower()
+    ]
+    assert any(s1.id in btn.callback_data for btn in switch_btns), (
+        "Switch button must reference s1.id, not a position index"
+    )
+
+    # Simulate clicking the Switch button for s1 (via act:cmd:/switch <s1.id>)
+    await engine._handle_act_callback(f"act:cmd:/switch {s1.id}", "2", 1, 77)
+    assert engine._sessions.active_session_id(key) == s1.id
+
+    # Now update s1 so it becomes most recent — list order flips
+    s1.updated_at = datetime(2026, 3, 22, 14, 0, tzinfo=UTC)
+    # Re-build list: s1 is now index 1, s2 is index 2
+    card2 = engine._build_list_card(key, "")
+    rows2 = card2.collect_buttons()
+    switch_btns2 = [
+        btn for row in rows2 for btn in row if "switch" in btn.callback_data.lower()
+    ]
+    # Switch button for s2 must still reference s2.id, not the new position
+    assert any(s2.id in btn.callback_data for btn in switch_btns2), (
+        "After reorder, Switch button must still reference s2.id"
+    )
+
+
+async def test_switch_by_full_uuid_via_callback() -> None:
+    """act:cmd:/switch <full-uuid> resolves by ID prefix match."""
+    engine, _agent, platform = _make_engine()
+    key = "telegram:1:2"
+    s1 = engine._sessions.new_session(key, name="Alpha")
+    engine._sessions.new_session(key, name="Beta")  # make s2 active so s1 is inactive
+
+    # Switch to s1 by its full ID via the callback path
+    await engine._handle_act_callback(f"act:cmd:/switch {s1.id}", "2", 1, 55)
+    assert engine._sessions.active_session_id(key) == s1.id
+    platform.edit_card.assert_called_once()

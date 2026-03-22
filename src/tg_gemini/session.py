@@ -95,6 +95,10 @@ class SessionManager:
         if store_path and store_path.exists():
             self._load()
 
+    @property
+    def max_history(self) -> int:
+        return self._max_history
+
     # ── v1 API ────────────────────────────────────────────────────────────
 
     def get_or_create(self, user_key: str) -> Session:

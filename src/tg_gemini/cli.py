@@ -88,7 +88,14 @@ def start(
         dedup=dedup,
     )
 
+    async def _run() -> None:
+        await rate_limiter.start()
+        try:
+            await engine.start()
+        finally:
+            await rate_limiter.stop()
+
     try:
-        asyncio.run(engine.start())
+        asyncio.run(_run())
     except KeyboardInterrupt:
         logger.info("tg-gemini stopped")

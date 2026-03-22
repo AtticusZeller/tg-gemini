@@ -29,7 +29,6 @@ class _InteractiveState:
     quiet: bool = False
     delete_selected: set[str] = field(default_factory=set)
     delete_phase: str = ""  # "" | "select" | "confirm"
-    delete_message_id: int = 0
 
 
 class Engine:
@@ -206,7 +205,7 @@ class Engine:
 
             # Track user message in history
             if msg.content:
-                session.add_history("user", msg.content, self._sessions._max_history)
+                session.add_history("user", msg.content, self._sessions.max_history)
 
             await gemini_session.send(
                 prompt=msg.content, images=msg.images or [], files=msg.files or []
@@ -284,7 +283,7 @@ class Engine:
                         # Track assistant response in history
                         if full_text:
                             session.add_history(
-                                "assistant", full_text, self._sessions._max_history
+                                "assistant", full_text, self._sessions.max_history
                             )
                         break
 
@@ -407,18 +406,6 @@ class Engine:
             card = self._build_delete_select_card(session_key)
             await self._platform.edit_card(ctx, message_id, card)
 
-    def _make_fake_msg(
-        self, session_key: str, user_id: str, ctx: ReplyContext
-    ) -> Message:
-        return Message(
-            session_key=session_key,
-            platform="telegram",
-            user_id=user_id,
-            user_name="",
-            content="",
-            reply_ctx=ctx,
-        )
-
     # ── card builders ─────────────────────────────────────────────────────
 
     def _build_lang_card(self) -> Card:
@@ -454,7 +441,7 @@ class Engine:
                 btn = (
                     None
                     if s.id == active_sid
-                    else CardButton("Switch", f"act:cmd:/switch {i}")
+                    else CardButton("Switch", f"act:cmd:/switch {s.id}")
                 )
                 builder.list_item(f"{marker}{i}. {s.summary}", btn)
             if total_pages > 1:
@@ -619,8 +606,7 @@ class Engine:
         istate.delete_selected.clear()
         istate.delete_phase = "select"
         card = self._build_delete_select_card(msg.session_key)
-        mid = await self._platform.send_card(msg.reply_ctx, card)
-        istate.delete_message_id = mid
+        await self._platform.send_card(msg.reply_ctx, card)
 
     async def _cmd_name(self, msg: Message, args: str) -> None:
         session = self._sessions.get(msg.session_key)
