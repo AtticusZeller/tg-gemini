@@ -185,6 +185,100 @@ class TestI18nTranslateFormat:
         assert result == "🆕 New session started."
 
 
+class TestV2MsgKeys:
+    """Spot-checks for v2 MsgKey additions."""
+
+    def test_lang_switched_en(self) -> None:
+        i18n = I18n(Language.EN)
+        assert i18n.tf(MsgKey.LANG_SWITCHED, "zh") == "✅ Language switched to: zh"
+
+    def test_lang_switched_zh(self) -> None:
+        i18n = I18n(Language.ZH)
+        assert i18n.tf(MsgKey.LANG_SWITCHED, "en") == "✅ 语言已切换为：en"
+
+    def test_quiet_on_off(self) -> None:
+        en = I18n(Language.EN)
+        assert "Quiet mode enabled" in en.t(MsgKey.QUIET_ON)
+        assert "Quiet mode disabled" in en.t(MsgKey.QUIET_OFF)
+
+    def test_session_list_header(self) -> None:
+        en = I18n(Language.EN)
+        assert en.tf(MsgKey.SESSION_LIST_HEADER, 3) == "Sessions (3 total):"
+
+    def test_session_deleted(self) -> None:
+        en = I18n(Language.EN)
+        assert en.tf(MsgKey.SESSION_DELETED, 2) == "2 session(s) deleted."
+
+    def test_session_delete_confirm(self) -> None:
+        en = I18n(Language.EN)
+        assert en.tf(MsgKey.SESSION_DELETE_CONFIRM, 1) == "Delete 1 session(s)?"
+
+    def test_page_nav_en(self) -> None:
+        en = I18n(Language.EN)
+        assert en.tf(MsgKey.PAGE_NAV, 1, 3) == "Page 1 of 3"
+
+    def test_page_nav_zh(self) -> None:
+        zh = I18n(Language.ZH)
+        assert zh.tf(MsgKey.PAGE_NAV, 2, 5) == "第 2 / 5 页"
+
+    def test_rate_limited(self) -> None:
+        en = I18n(Language.EN)
+        assert "Rate limited" in en.t(MsgKey.RATE_LIMITED)
+
+    def test_status_info_format(self) -> None:
+        en = I18n(Language.EN)
+        result = en.tf(MsgKey.STATUS_INFO, "gemini-2.5-pro", "default", "Sprint", "✅")
+        assert "gemini-2.5-pro" in result
+        assert "default" in result
+
+    def test_session_named(self) -> None:
+        en = I18n(Language.EN)
+        assert "My Session" in en.tf(MsgKey.SESSION_NAMED, "My Session")
+
+    def test_help_includes_new_commands(self) -> None:
+        en = I18n(Language.EN)
+        help_text = en.t(MsgKey.HELP)
+        for cmd in (
+            "/list",
+            "/switch",
+            "/delete",
+            "/name",
+            "/history",
+            "/current",
+            "/status",
+            "/lang",
+            "/quiet",
+        ):
+            assert cmd in help_text, f"{cmd} missing from help"
+
+    def test_v2_keys_all_have_zh(self) -> None:
+        from tg_gemini.i18n import MESSAGES
+
+        v2_keys = [
+            MsgKey.LANG_SWITCHED,
+            MsgKey.LANG_CURRENT,
+            MsgKey.QUIET_ON,
+            MsgKey.QUIET_OFF,
+            MsgKey.STATUS_INFO,
+            MsgKey.SESSION_LIST_HEADER,
+            MsgKey.SESSION_LIST_EMPTY,
+            MsgKey.SESSION_SWITCHED,
+            MsgKey.SESSION_NOT_FOUND,
+            MsgKey.SESSION_CURRENT,
+            MsgKey.SESSION_DELETED,
+            MsgKey.SESSION_DELETE_CONFIRM,
+            MsgKey.SESSION_DELETE_CANCEL,
+            MsgKey.SESSION_HISTORY_HEADER,
+            MsgKey.SESSION_HISTORY_EMPTY,
+            MsgKey.SESSION_NAMED,
+            MsgKey.RATE_LIMITED,
+            MsgKey.PAGE_NAV,
+        ]
+        for key in v2_keys:
+            assert key in MESSAGES, f"Missing MESSAGES entry: {key}"
+            assert Language.ZH in MESSAGES[key], f"Missing ZH for {key}"
+
+
 class TestI18nDetectLanguage:
     """Tests for detect_language static method."""
 

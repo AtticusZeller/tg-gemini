@@ -556,10 +556,10 @@ async def test_handle_update_user_no_username() -> None:
 
 async def test_handle_callback_with_handler() -> None:
     platform, _ = _make_platform_with_app()
-    cb_received: list[tuple[str, str, int]] = []
+    cb_received: list[tuple[str, str, int, int]] = []
 
-    async def my_cb(data: str, user_id: str, chat_id: int) -> None:
-        cb_received.append((data, user_id, chat_id))
+    async def my_cb(data: str, user_id: str, chat_id: int, message_id: int) -> None:
+        cb_received.append((data, user_id, chat_id, message_id))
 
     platform._callback_handlers["btn_click"] = my_cb
 
@@ -570,11 +570,12 @@ async def test_handle_callback_with_handler() -> None:
     query.from_user.id = 42
     query.message = MagicMock()
     query.message.chat.id = 100
+    query.message.message_id = 55
     update = MagicMock()
     update.callback_query = query
 
     await platform._handle_callback(update, None)
-    assert cb_received == [("btn_click", "42", 100)]
+    assert cb_received == [("btn_click", "42", 100, 55)]
 
 
 async def test_handle_callback_no_query() -> None:
@@ -770,3 +771,188 @@ async def test_send_html_no_reply_to() -> None:
     await platform.send(ctx, "plain text")
     call_kwargs = mock_bot.send_message.call_args.kwargs
     assert "reply_to_message_id" not in call_kwargs
+
+
+# --- v2: send_card / edit_card / prefix callbacks ---
+
+
+def _make_simple_card(with_button: bool = True) -> "Any":
+    from tg_gemini.card import CardBuilder, CardButton
+
+    builder = CardBuilder().title("Hello").markdown("**world**")
+    if with_button:
+        builder.actions(CardButton("Click", "act:ok"))
+    return builder.build()
+
+
+async def test_send_card_with_buttons() -> None:
+    platform, mock_bot = _make_platform_with_app()
+    mock_msg = MagicMock()
+    mock_msg.message_id = 77
+    mock_bot.send_message = AsyncMock(return_value=mock_msg)
+    ctx = ReplyContext(chat_id=5)
+    card = _make_simple_card(with_button=True)
+    mid = await platform.send_card(ctx, card)
+    mock_bot.send_message.assert_called_once()
+    call_kwargs = mock_bot.send_message.call_args.kwargs
+    assert "reply_markup" in call_kwargs
+    assert mid == 77
+
+
+async def test_send_card_without_buttons() -> None:
+    platform, mock_bot = _make_platform_with_app()
+    mock_bot.send_message = AsyncMock()
+    ctx = ReplyContext(chat_id=5)
+    card = _make_simple_card(with_button=False)
+    mid = await platform.send_card(ctx, card)
+    mock_bot.send_message.assert_called_once()
+    call_kwargs = mock_bot.send_message.call_args.kwargs
+    assert "reply_markup" not in call_kwargs
+    assert mid == 0
+
+
+async def test_send_card_no_app_returns_zero() -> None:
+    platform = TelegramPlatform(token="tok", allow_from="*")
+    ctx = ReplyContext(chat_id=1)
+    card = _make_simple_card()
+    mid = await platform.send_card(ctx, card)
+    assert mid == 0
+
+
+async def test_send_card_failure_logs() -> None:
+    platform, mock_bot = _make_platform_with_app()
+    mock_bot.send_message = AsyncMock(side_effect=Exception("failed"))
+    ctx = ReplyContext(chat_id=1)
+    card = _make_simple_card(with_button=True)
+    mid = await platform.send_card(ctx, card)
+    assert mid == 0  # should not raise
+
+
+async def test_edit_card_with_buttons() -> None:
+    platform, mock_bot = _make_platform_with_app()
+    mock_bot.edit_message_text = AsyncMock()
+    ctx = ReplyContext(chat_id=5)
+    card = _make_simple_card(with_button=True)
+    await platform.edit_card(ctx, message_id=42, card=card)
+    mock_bot.edit_message_text.assert_called_once()
+    call_kwargs = mock_bot.edit_message_text.call_args.kwargs
+    assert call_kwargs["message_id"] == 42
+    assert "reply_markup" in call_kwargs
+
+
+async def test_edit_card_without_buttons() -> None:
+    platform, mock_bot = _make_platform_with_app()
+    mock_bot.edit_message_text = AsyncMock()
+    ctx = ReplyContext(chat_id=5)
+    card = _make_simple_card(with_button=False)
+    await platform.edit_card(ctx, message_id=99, card=card)
+    mock_bot.edit_message_text.assert_called_once()
+
+
+async def test_edit_card_not_modified_no_raise() -> None:
+    from telegram.error import BadRequest as TgBadRequest
+
+    platform, mock_bot = _make_platform_with_app()
+    mock_bot.edit_message_text = AsyncMock(
+        side_effect=TgBadRequest("message is not modified")
+    )
+    ctx = ReplyContext(chat_id=1)
+    await platform.edit_card(ctx, 1, _make_simple_card())  # Should not raise
+
+
+async def test_edit_card_other_bad_request_logs() -> None:
+    from telegram.error import BadRequest as TgBadRequest
+
+    platform, mock_bot = _make_platform_with_app()
+    mock_bot.edit_message_text = AsyncMock(side_effect=TgBadRequest("not found"))
+    ctx = ReplyContext(chat_id=1)
+    await platform.edit_card(ctx, 1, _make_simple_card())  # Should not raise
+
+
+async def test_edit_card_no_app() -> None:
+    platform = TelegramPlatform(token="tok", allow_from="*")
+    ctx = ReplyContext(chat_id=1)
+    await platform.edit_card(ctx, 1, _make_simple_card())  # Should not raise
+
+
+async def test_register_callback_prefix() -> None:
+    platform, _ = _make_platform_with_app()
+    received: list[str] = []
+
+    async def handler(data: str, _uid: str, _cid: int, _mid: int) -> None:
+        received.append(data)
+
+    platform.register_callback_prefix("cmd:", handler)
+    assert "cmd:" in platform._prefix_handlers
+
+
+async def test_prefix_callback_dispatch() -> None:
+    platform, _ = _make_platform_with_app()
+    received: list[tuple[str, str, int, int]] = []
+
+    async def handler(data: str, user_id: str, chat_id: int, message_id: int) -> None:
+        received.append((data, user_id, chat_id, message_id))
+
+    platform.register_callback_prefix("cmd:", handler)
+
+    query = AsyncMock()
+    query.data = "cmd:/list 2"
+    query.answer = AsyncMock()
+    query.from_user = MagicMock()
+    query.from_user.id = 10
+    query.message = MagicMock()
+    query.message.chat.id = 50
+    query.message.message_id = 7
+    update = MagicMock()
+    update.callback_query = query
+
+    await platform._handle_callback(update, None)
+    assert received == [("cmd:/list 2", "10", 50, 7)]
+
+
+async def test_exact_match_takes_priority_over_prefix() -> None:
+    platform, _ = _make_platform_with_app()
+    exact_received: list[str] = []
+    prefix_received: list[str] = []
+
+    async def exact_handler(data: str, _uid: str, _cid: int, _mid: int) -> None:
+        exact_received.append(data)
+
+    async def prefix_handler(data: str, _uid: str, _cid: int, _mid: int) -> None:
+        prefix_received.append(data)
+
+    platform._callback_handlers["cmd:/list"] = exact_handler
+    platform.register_callback_prefix("cmd:", prefix_handler)
+
+    query = AsyncMock()
+    query.data = "cmd:/list"
+    query.answer = AsyncMock()
+    query.from_user = MagicMock()
+    query.from_user.id = 1
+    query.message = MagicMock()
+    query.message.chat.id = 1
+    query.message.message_id = 1
+    update = MagicMock()
+    update.callback_query = query
+
+    await platform._handle_callback(update, None)
+    assert exact_received == ["cmd:/list"]
+    assert prefix_received == []
+
+
+async def test_no_matching_prefix_handler_no_raise() -> None:
+    platform, _ = _make_platform_with_app()
+    platform.register_callback_prefix("cmd:", AsyncMock())
+
+    query = AsyncMock()
+    query.data = "other:data"
+    query.answer = AsyncMock()
+    query.from_user = MagicMock()
+    query.from_user.id = 1
+    query.message = MagicMock()
+    query.message.chat.id = 1
+    query.message.message_id = 1
+    update = MagicMock()
+    update.callback_query = query
+
+    await platform._handle_callback(update, None)  # Should not raise

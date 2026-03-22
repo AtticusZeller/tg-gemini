@@ -1,39 +1,40 @@
-"""Tests for Session and SessionManager classes."""
+"""Tests for Session and SessionManager (v2: multi-session + history)."""
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
-from tg_gemini.session import Session, SessionManager
+import pytest
+
+from tg_gemini.session import HistoryEntry, Session, SessionManager
+
+# ── Session ────────────────────────────────────────────────────────────────
 
 
 class TestSession:
-    """Tests for the Session class."""
-
     def test_session_creation(self) -> None:
-        """Test basic session creation."""
         session = Session(id="test-id")
         assert session.id == "test-id"
         assert session.agent_session_id == ""
+        assert session.user_key == ""
+        assert session.name == ""
+        assert session.history == []
         assert not session.busy
         assert isinstance(session.created_at, datetime)
         assert isinstance(session.updated_at, datetime)
 
     def test_session_with_agent_id(self) -> None:
-        """Test session creation with agent session ID."""
         session = Session(id="test-id", agent_session_id="agent-123")
         assert session.agent_session_id == "agent-123"
 
     async def test_try_lock_not_busy(self) -> None:
-        """Test try_lock returns True when not busy."""
         session = Session(id="test-id")
         result = await session.try_lock()
         assert result is True
         assert session.busy
 
     async def test_try_lock_when_busy(self) -> None:
-        """Test try_lock returns False when already busy."""
         session = Session(id="test-id")
         await session.try_lock()
         result = await session.try_lock()
@@ -41,7 +42,6 @@ class TestSession:
         assert session.busy
 
     async def test_unlock_releases_lock(self) -> None:
-        """Test unlock releases the lock."""
         session = Session(id="test-id")
         await session.try_lock()
         assert session.busy
@@ -49,16 +49,14 @@ class TestSession:
         assert not session.busy
 
     async def test_unlock_updates_timestamp(self) -> None:
-        """Test unlock updates the updated_at timestamp."""
         session = Session(id="test-id")
         old_time = session.updated_at
         await session.try_lock()
-        await asyncio.sleep(0.01)  # Small delay to ensure time changes
+        await asyncio.sleep(0.01)
         await session.unlock()
         assert session.updated_at > old_time
 
     async def test_lock_can_be_reacquired_after_unlock(self) -> None:
-        """Test lock can be reacquired after unlock."""
         session = Session(id="test-id")
         await session.try_lock()
         await session.unlock()
@@ -67,24 +65,97 @@ class TestSession:
         assert session.busy
 
     def test_busy_property(self) -> None:
-        """Test busy property reflects lock state."""
         session = Session(id="test-id")
         assert not session.busy
 
 
-class TestSessionManager:
-    """Tests for the SessionManager class."""
+# ── HistoryEntry + Session.add_history ────────────────────────────────────
 
+
+class TestHistoryEntry:
+    def test_creation(self) -> None:
+        h = HistoryEntry(role="user", content="hello")
+        assert h.role == "user"
+        assert h.content == "hello"
+        assert isinstance(h.timestamp, datetime)
+
+    def test_timestamp_is_utc(self) -> None:
+        h = HistoryEntry(role="assistant", content="hi")
+        assert h.timestamp.tzinfo is not None
+
+
+class TestAddHistory:
+    def test_appends_entry(self) -> None:
+        s = Session(id="x")
+        s.add_history("user", "hello")
+        assert len(s.history) == 1
+        assert s.history[0].role == "user"
+        assert s.history[0].content == "hello"
+
+    def test_trims_oldest_on_overflow(self) -> None:
+        s = Session(id="x")
+        for i in range(5):
+            s.add_history("user", str(i))
+        s.add_history("user", "extra", max_entries=5)
+        assert len(s.history) == 5
+        assert s.history[0].content == "1"  # oldest "0" removed
+
+    def test_max_entries_zero_no_trim(self) -> None:
+        s = Session(id="x")
+        for i in range(200):
+            s.add_history("user", str(i), max_entries=0)
+        assert len(s.history) == 200
+
+    def test_multiple_roles(self) -> None:
+        s = Session(id="x")
+        s.add_history("user", "q")
+        s.add_history("assistant", "a")
+        assert s.history[0].role == "user"
+        assert s.history[1].role == "assistant"
+
+
+# ── Session.summary ────────────────────────────────────────────────────────
+
+
+class TestSessionSummary:
+    def test_name_takes_priority(self) -> None:
+        s = Session(id="abc-123", name="My Project")
+        s.add_history("user", "hello world this is a long message")
+        assert s.summary == "My Project"
+
+    def test_first_user_message_preview(self) -> None:
+        s = Session(id="abc-12345678")
+        s.add_history("assistant", "intro")
+        s.add_history("user", "Short msg")
+        assert s.summary == "Short msg"
+
+    def test_long_first_user_message_truncated(self) -> None:
+        s = Session(id="abc-123")
+        s.add_history("user", "a" * 40)
+        assert s.summary.endswith("…")
+        assert len(s.summary) == 31  # 30 chars + ellipsis
+
+    def test_fallback_truncated_id(self) -> None:
+        s = Session(id="abcdef1234567890")
+        assert s.summary == "abcdef12"
+
+    def test_empty_session(self) -> None:
+        s = Session(id="xyz-123")
+        assert s.summary == "xyz-123"[:8]
+
+
+# ── SessionManager v1 API (backward-compatible) ────────────────────────────
+
+
+class TestSessionManagerV1API:
     def test_get_or_create_new_session(self) -> None:
-        """Test get_or_create creates a new session."""
         manager = SessionManager()
         session = manager.get_or_create("user1")
         assert isinstance(session, Session)
         assert session.id
-        assert "user1" in manager._sessions
+        assert session.user_key == "user1"
 
     def test_get_or_create_returns_same_session(self) -> None:
-        """Test get_or_create returns the same session on second call."""
         manager = SessionManager()
         session1 = manager.get_or_create("user1")
         session2 = manager.get_or_create("user1")
@@ -92,170 +163,338 @@ class TestSessionManager:
         assert session1 is session2
 
     def test_get_or_create_different_users(self) -> None:
-        """Test get_or_create creates different sessions for different users."""
         manager = SessionManager()
         session1 = manager.get_or_create("user1")
         session2 = manager.get_or_create("user2")
         assert session1.id != session2.id
 
     def test_new_session_creates_fresh_session(self) -> None:
-        """Test new_session creates a fresh session."""
         manager = SessionManager()
         old_session = manager.get_or_create("user1")
         new_session = manager.new_session("user1")
         assert new_session.id != old_session.id
 
-    def test_new_session_replaces_old(self) -> None:
-        """Test new_session replaces the old session."""
+    def test_new_session_becomes_active(self) -> None:
         manager = SessionManager()
         manager.get_or_create("user1")
         new_session = manager.new_session("user1")
         retrieved = manager.get("user1")
         assert retrieved is new_session
 
+    def test_new_session_with_name(self) -> None:
+        manager = SessionManager()
+        s = manager.new_session("user1", name="Sprint 1")
+        assert s.name == "Sprint 1"
+
     def test_get_existing_session(self) -> None:
-        """Test get returns existing session."""
         manager = SessionManager()
         created = manager.get_or_create("user1")
         retrieved = manager.get("user1")
         assert retrieved is created
 
     def test_get_nonexistent_session(self) -> None:
-        """Test get returns None for non-existent session."""
         manager = SessionManager()
         result = manager.get("nonexistent")
         assert result is None
 
     def test_manager_without_store_path(self) -> None:
-        """Test SessionManager works without a store path."""
         manager = SessionManager()
         session = manager.get_or_create("user1")
         assert session.id
-        # No file I/O should occur
 
 
-class TestSessionManagerPersistence:
-    """Tests for SessionManager persistence."""
+# ── SessionManager v2 API ─────────────────────────────────────────────────
 
-    def test_save_creates_file(self, tmp_path: Path) -> None:
-        """Test _save creates the store file."""
-        store_path = tmp_path / "sessions.json"
-        manager = SessionManager(store_path=store_path)
-        manager.get_or_create("user1")
+
+class TestListSessions:
+    def test_empty(self) -> None:
+        manager = SessionManager()
+        assert manager.list_sessions("user1") == []
+
+    def test_single_session(self) -> None:
+        manager = SessionManager()
+        s = manager.get_or_create("user1")
+        result = manager.list_sessions("user1")
+        assert len(result) == 1
+        assert result[0].id == s.id
+
+    def test_multiple_sessions_sorted_by_updated_at_desc(self) -> None:
+        manager = SessionManager()
+        s1 = manager.new_session("u")
+        s2 = manager.new_session("u")
+        s3 = manager.new_session("u")
+        # Tweak timestamps: s2 most recent
+        s2.updated_at = datetime(2026, 3, 20, tzinfo=UTC)
+        s1.updated_at = datetime(2026, 3, 18, tzinfo=UTC)
+        s3.updated_at = datetime(2026, 3, 19, tzinfo=UTC)
+        result = manager.list_sessions("u")
+        assert result[0].id == s2.id
+        assert result[1].id == s3.id
+        assert result[2].id == s1.id
+
+
+class TestSwitchSession:
+    def test_switch_by_index(self) -> None:
+        manager = SessionManager()
+        s1 = manager.new_session("u")
+        s2 = manager.new_session("u")
+        # s2 is most recent → index 1, s1 → index 2
+        s2.updated_at = datetime(2026, 3, 20, tzinfo=UTC)
+        s1.updated_at = datetime(2026, 3, 18, tzinfo=UTC)
+        result = manager.switch_session("u", "2")  # switch to index 2 (s1)
+        assert result is not None
+        assert result.id == s1.id
+        assert manager.active_session_id("u") == s1.id
+
+    def test_switch_by_id_prefix(self) -> None:
+        manager = SessionManager()
+        s = manager.new_session("u")
+        manager.new_session("u")
+        switched = manager.switch_session("u", s.id[:8])
+        assert switched is not None
+        assert switched.id == s.id
+
+    def test_switch_by_name_substring(self) -> None:
+        manager = SessionManager()
+        s1 = manager.new_session("u", name="Alpha Project")
+        manager.new_session("u", name="Beta Project")
+        result = manager.switch_session("u", "alpha")
+        assert result is not None
+        assert result.id == s1.id
+
+    def test_switch_invalid_target(self) -> None:
+        manager = SessionManager()
+        manager.new_session("u")
+        result = manager.switch_session("u", "zzz-not-found")
+        assert result is None
+
+    def test_switch_out_of_range_index(self) -> None:
+        manager = SessionManager()
+        manager.new_session("u")
+        result = manager.switch_session("u", "99")
+        assert result is None
+
+    def test_switch_empty_sessions(self) -> None:
+        manager = SessionManager()
+        result = manager.switch_session("u", "1")
+        assert result is None
+
+
+class TestDeleteSession:
+    def test_delete_existing(self) -> None:
+        manager = SessionManager()
+        s = manager.get_or_create("u")
+        result = manager.delete_session(s.id)
+        assert result is True
+        assert manager.find_session(s.id) is None
+
+    def test_delete_nonexistent(self) -> None:
+        manager = SessionManager()
+        result = manager.delete_session("no-such-id")
+        assert result is False
+
+    def test_delete_active_promotes_next(self) -> None:
+        manager = SessionManager()
+        s1 = manager.new_session("u")
+        s2 = manager.new_session("u")
+        # s2 is active and more recent
+        s2.updated_at = datetime(2026, 3, 20, tzinfo=UTC)
+        s1.updated_at = datetime(2026, 3, 18, tzinfo=UTC)
+        manager.delete_session(s2.id)
+        assert manager.active_session_id("u") == s1.id
+
+    def test_delete_last_clears_active(self) -> None:
+        manager = SessionManager()
+        s = manager.get_or_create("u")
+        manager.delete_session(s.id)
+        assert manager.active_session_id("u") == ""
+
+    def test_delete_non_active_preserves_active(self) -> None:
+        manager = SessionManager()
+        s1 = manager.new_session("u")
+        s2 = manager.new_session("u")  # s2 active
+        manager.delete_session(s1.id)
+        assert manager.active_session_id("u") == s2.id
+
+
+class TestDeleteSessions:
+    def test_delete_multiple(self) -> None:
+        manager = SessionManager()
+        s1 = manager.new_session("u")
+        s2 = manager.new_session("u")
+        count = manager.delete_sessions([s1.id, s2.id])
+        assert count == 2
+
+    def test_delete_partial(self) -> None:
+        manager = SessionManager()
+        s = manager.new_session("u")
+        count = manager.delete_sessions([s.id, "nonexistent"])
+        assert count == 1
+
+
+class TestSetSessionName:
+    def test_rename_success(self) -> None:
+        manager = SessionManager()
+        s = manager.get_or_create("u")
+        result = manager.set_session_name(s.id, "New Name")
+        assert result is True
+        assert s.name == "New Name"
+
+    def test_rename_nonexistent(self) -> None:
+        manager = SessionManager()
+        result = manager.set_session_name("no-id", "Name")
+        assert result is False
+
+
+class TestSessionCount:
+    def test_zero_initially(self) -> None:
+        manager = SessionManager()
+        assert manager.session_count("u") == 0
+
+    def test_increments_with_new_sessions(self) -> None:
+        manager = SessionManager()
+        manager.new_session("u")
+        manager.new_session("u")
+        assert manager.session_count("u") == 2
+
+    def test_decrements_on_delete(self) -> None:
+        manager = SessionManager()
+        s = manager.new_session("u")
+        manager.new_session("u")
+        manager.delete_session(s.id)
+        assert manager.session_count("u") == 1
+
+
+# ── Persistence ────────────────────────────────────────────────────────────
+
+
+class TestV2SaveLoad:
+    def test_save_creates_v2_format(self, tmp_path: Path) -> None:
+        store = tmp_path / "sessions.json"
+        manager = SessionManager(store_path=store)
+        s = manager.get_or_create("user1")
+        s.add_history("user", "hello")
         manager._save()
-        assert store_path.exists()
 
-    def test_save_creates_parent_directories(self, tmp_path: Path) -> None:
-        """Test _save creates parent directories."""
-        store_path = tmp_path / "subdir" / "sessions.json"
-        manager = SessionManager(store_path=store_path)
-        manager.get_or_create("user1")
-        manager._save()
-        assert store_path.exists()
+        data = json.loads(store.read_text())
+        assert data["version"] == 2
+        assert "sessions" in data
+        assert "active_sessions" in data
+        assert "session_counter" in data
 
-    def test_save_content(self, tmp_path: Path) -> None:
-        """Test _save writes correct content."""
-        store_path = tmp_path / "sessions.json"
-        manager = SessionManager(store_path=store_path)
-        session = manager.get_or_create("user1")
-        session.agent_session_id = "agent-123"
-        manager._save()
+    def test_v2_round_trip(self, tmp_path: Path) -> None:
+        store = tmp_path / "sessions.json"
+        m1 = SessionManager(store_path=store)
+        s = m1.new_session("user1", name="Proj A")
+        s.agent_session_id = "agent-xyz"
+        s.add_history("user", "first message")
+        m1._save()
 
-        data = json.loads(store_path.read_text())
-        assert "user1" in data
-        assert data["user1"]["id"] == session.id
-        assert data["user1"]["agent_session_id"] == "agent-123"
-        assert "created_at" in data["user1"]
-        assert "updated_at" in data["user1"]
+        m2 = SessionManager(store_path=store)
+        loaded = m2.get("user1")
+        assert loaded is not None
+        assert loaded.id == s.id
+        assert loaded.name == "Proj A"
+        assert loaded.agent_session_id == "agent-xyz"
+        assert len(loaded.history) == 1
+        assert loaded.history[0].content == "first message"
 
-    def test_load_on_init(self, tmp_path: Path) -> None:
-        """Test sessions are loaded on manager creation."""
-        store_path = tmp_path / "sessions.json"
+    def test_v2_active_session_preserved(self, tmp_path: Path) -> None:
+        store = tmp_path / "sessions.json"
+        m1 = SessionManager(store_path=store)
+        m1.new_session("u")
+        s2 = m1.new_session("u")
+        m1._save()
 
-        # Create and save sessions
-        manager1 = SessionManager(store_path=store_path)
-        session = manager1.get_or_create("user1")
-        session.agent_session_id = "agent-123"
-        manager1._save()
+        m2 = SessionManager(store_path=store)
+        assert m2.active_session_id("u") == s2.id
 
-        # Load in new manager
-        manager2 = SessionManager(store_path=store_path)
-        loaded_session = manager2.get("user1")
-        assert loaded_session is not None
-        assert loaded_session.id == session.id
-        assert loaded_session.agent_session_id == "agent-123"
-
-    def test_load_preserves_timestamps(self, tmp_path: Path) -> None:
-        """Test load preserves created_at and updated_at."""
-        store_path = tmp_path / "sessions.json"
-
-        manager1 = SessionManager(store_path=store_path)
-        session = manager1.get_or_create("user1")
-        original_created = session.created_at
-        original_updated = session.updated_at
-        manager1._save()
-
-        manager2 = SessionManager(store_path=store_path)
-        loaded_session = manager2.get("user1")
-        assert loaded_session.created_at == original_created
-        assert loaded_session.updated_at == original_updated
-
-    def test_load_corrupt_file(self, tmp_path: Path) -> None:
-        """Test _load handles corrupt file gracefully."""
-        store_path = tmp_path / "sessions.json"
-        store_path.write_text("not valid json")
-        # Should not raise
-        manager = SessionManager(store_path=store_path)
+    def test_corrupt_file_silent(self, tmp_path: Path) -> None:
+        store = tmp_path / "sessions.json"
+        store.write_text("corrupted")
+        manager = SessionManager(store_path=store)
         assert manager.get("any") is None
 
-    def test_load_missing_file(self, tmp_path: Path) -> None:
-        """Test _load handles missing file gracefully."""
-        store_path = tmp_path / "nonexistent" / "sessions.json"
-        # Should not raise
-        manager = SessionManager(store_path=store_path)
-        assert manager.get("any") is None
-
-    def test_new_session_saves(self, tmp_path: Path) -> None:
-        """Test new_session triggers a save."""
-        store_path = tmp_path / "sessions.json"
-        manager = SessionManager(store_path=store_path)
+    def test_no_store_path_save_noop(self) -> None:
+        manager = SessionManager()
         manager.get_or_create("user1")
+        manager._save()  # should not raise
+
+    def test_no_store_path_load_noop(self) -> None:
+        manager = SessionManager()
+        manager._load()  # should not raise
+
+
+class TestV1Migration:
+    def _make_v1_file(self, tmp_path: Path) -> tuple[Path, str, str]:
+        """Create a v1-format sessions.json, return (path, user_key, session_id)."""
+        store = tmp_path / "sessions.json"
+        sid = "11111111-0000-0000-0000-000000000001"
+        data = {
+            "telegram:1:100": {
+                "id": sid,
+                "agent_session_id": "gemini-session-abc",
+                "created_at": "2026-03-01T10:00:00+00:00",
+                "updated_at": "2026-03-01T11:00:00+00:00",
+            }
+        }
+        store.write_text(json.dumps(data))
+        return store, "telegram:1:100", sid
+
+    def test_v1_auto_migrates(self, tmp_path: Path) -> None:
+        store, user_key, sid = self._make_v1_file(tmp_path)
+        manager = SessionManager(store_path=store)
+        session = manager.get(user_key)
+        assert session is not None
+        assert session.id == sid
+
+    def test_v1_agent_session_preserved(self, tmp_path: Path) -> None:
+        store, user_key, _ = self._make_v1_file(tmp_path)
+        manager = SessionManager(store_path=store)
+        session = manager.get(user_key)
+        assert session is not None
+        assert session.agent_session_id == "gemini-session-abc"
+
+    def test_v1_migrated_saved_as_v2(self, tmp_path: Path) -> None:
+        store, _, _ = self._make_v1_file(tmp_path)
+        SessionManager(store_path=store)
+        data = json.loads(store.read_text())
+        assert data.get("version") == 2
+
+    def test_v1_timestamps_preserved(self, tmp_path: Path) -> None:
+        store, user_key, _ = self._make_v1_file(tmp_path)
+        manager = SessionManager(store_path=store)
+        session = manager.get(user_key)
+        assert session is not None
+        assert session.created_at.year == 2026
+
+    def test_v1_invalid_entries_skipped(self, tmp_path: Path) -> None:
+        store = tmp_path / "sessions.json"
+        store.write_text(json.dumps({"bad-entry": "not a dict"}))
+        manager = SessionManager(store_path=store)
+        assert manager.get("bad-entry") is None
+
+    def test_new_session_saves_v2(self, tmp_path: Path) -> None:
+        store = tmp_path / "sessions.json"
+        manager = SessionManager(store_path=store)
         manager.new_session("user1")
+        data = json.loads(store.read_text())
+        assert data["version"] == 2
 
-        data = json.loads(store_path.read_text())
-        assert "user1" in data
 
-    def test_load_no_store_path(self) -> None:
-        """Test _load does nothing when no store_path."""
-        manager = SessionManager()
-        # Should not raise
-        manager._load()
-
-    def test_save_no_store_path(self) -> None:
-        """Test _save does nothing when no store_path."""
-        manager = SessionManager()
-        manager.get_or_create("user1")
-        # Should not raise
-        manager._save()
+# ── Concurrent locking ─────────────────────────────────────────────────────
 
 
 class TestConcurrentLocking:
-    """Tests for concurrent session locking behavior."""
-
     async def test_concurrent_try_lock(self) -> None:
-        """Test concurrent try_lock calls."""
         session = Session(id="test-id")
-
         results = await asyncio.gather(
             session.try_lock(), session.try_lock(), session.try_lock()
         )
-
-        # Only one should succeed
         assert sum(1 for r in results if r) == 1
         assert sum(1 for r in results if not r) == 2
 
     async def test_concurrent_lock_unlock(self) -> None:
-        """Test concurrent lock and unlock operations."""
         session = Session(id="test-id")
         lock_count = [0]
 
@@ -267,26 +506,18 @@ class TestConcurrentLocking:
                     await session.unlock()
 
         await asyncio.gather(*[locker() for _ in range(5)])
-        # With concurrent access, not all 50 attempts can succeed (only one lock holder at a time)
-        # But at least some should have succeeded
         assert 1 <= lock_count[0] <= 50
 
     async def test_session_isolation(self) -> None:
-        """Test sessions are isolated from each other."""
         manager = SessionManager()
         session1 = manager.get_or_create("user1")
         session2 = manager.get_or_create("user2")
-
-        # Lock session1
         assert await session1.try_lock()
-        # session2 should still be available
         assert await session2.try_lock()
-
         await session1.unlock()
         await session2.unlock()
 
     async def test_manager_concurrent_access(self) -> None:
-        """Test concurrent access to SessionManager."""
         manager = SessionManager()
 
         async def create_and_lock(user_key: str) -> bool:
@@ -296,21 +527,66 @@ class TestConcurrentLocking:
         results = await asyncio.gather(
             create_and_lock("user1"), create_and_lock("user2"), create_and_lock("user3")
         )
-
-        # All should succeed since they're different sessions
         assert all(results)
 
     async def test_lock_released_after_exception(self) -> None:
-        """Test lock state after exception in locked block."""
         session = Session(id="test-id")
         await session.try_lock()
-
         try:
-            raise ValueError("test error")
+            msg = "test error"
+            raise ValueError(msg)
         except ValueError:
             pass
-
-        # Lock should still be held (unlock must be called explicitly)
         assert session.busy
         await session.unlock()
         assert not session.busy
+
+    async def test_concurrent_locking_across_sessions(self) -> None:
+        manager = SessionManager()
+        sessions = [manager.new_session(f"user{i}") for i in range(5)]
+        results = await asyncio.gather(*(s.try_lock() for s in sessions))
+        assert all(results)
+
+
+# ── Regression: old test_save_content adapted for v2 ─────────────────────
+
+
+class TestSaveContentV2:
+    def test_save_creates_file(self, tmp_path: Path) -> None:
+        store = tmp_path / "sessions.json"
+        manager = SessionManager(store_path=store)
+        manager.get_or_create("user1")
+        manager._save()
+        assert store.exists()
+
+    def test_save_creates_parent_directories(self, tmp_path: Path) -> None:
+        store = tmp_path / "subdir" / "sessions.json"
+        manager = SessionManager(store_path=store)
+        manager.get_or_create("user1")
+        manager._save()
+        assert store.exists()
+
+    def test_load_preserves_timestamps(self, tmp_path: Path) -> None:
+        store = tmp_path / "sessions.json"
+        m1 = SessionManager(store_path=store)
+        session = m1.get_or_create("user1")
+        orig_created = session.created_at
+        orig_updated = session.updated_at
+        m1._save()
+
+        m2 = SessionManager(store_path=store)
+        loaded = m2.get("user1")
+        assert loaded is not None
+        assert loaded.created_at == orig_created
+        assert loaded.updated_at == orig_updated
+
+    def test_missing_file_graceful(self, tmp_path: Path) -> None:
+        store = tmp_path / "nonexistent" / "sessions.json"
+        manager = SessionManager(store_path=store)
+        assert manager.get("any") is None
+
+    @pytest.mark.parametrize("user_key", ["user1", "telegram:100:200", "tg:0:0"])
+    def test_various_user_keys(self, user_key: str) -> None:
+        manager = SessionManager()
+        s = manager.get_or_create(user_key)
+        assert s.user_key == user_key

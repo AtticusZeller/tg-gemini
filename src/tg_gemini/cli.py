@@ -25,9 +25,11 @@ def start(
 ) -> None:
     """Start the tg-gemini bot service."""
     from tg_gemini.config import load_config, resolve_config_path
+    from tg_gemini.dedup import MessageDedup
     from tg_gemini.engine import Engine
     from tg_gemini.gemini import GeminiAgent
     from tg_gemini.i18n import I18n, Language
+    from tg_gemini.ratelimit import RateLimiter
     from tg_gemini.session import SessionManager
     from tg_gemini.telegram_platform import TelegramPlatform
 
@@ -72,8 +74,18 @@ def start(
     )
 
     i18n = I18n(lang=lang)
+    rate_limiter = RateLimiter(
+        max_messages=cfg.rate_limit.max_messages, window_secs=cfg.rate_limit.window_secs
+    )
+    dedup = MessageDedup()
     engine = Engine(
-        config=cfg, agent=agent, platform=platform, sessions=sessions, i18n=i18n
+        config=cfg,
+        agent=agent,
+        platform=platform,
+        sessions=sessions,
+        i18n=i18n,
+        rate_limiter=rate_limiter,
+        dedup=dedup,
     )
 
     try:

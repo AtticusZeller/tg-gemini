@@ -17,6 +17,7 @@ from telegram.ext import (
     filters,
 )
 
+from tg_gemini.card import Card
 from tg_gemini.markdown import markdown_to_html, split_message
 from tg_gemini.models import (
     FileAttachment,
@@ -48,8 +49,13 @@ class TelegramPlatform:
         self._token = token
         self._allow_from = allow_from
         self._app: Application[Any, Any, Any, Any, Any, Any] | None = None
+        # exact-match callbacks: data → handler(data, user_id, chat_id, message_id)
         self._callback_handlers: dict[
-            str, Callable[[str, str, int], Awaitable[None]]
+            str, Callable[[str, str, int, int], Awaitable[None]]
+        ] = {}
+        # prefix-match callbacks: prefix → handler(data, user_id, chat_id, message_id)
+        self._prefix_handlers: dict[
+            str, Callable[[str, str, int, int], Awaitable[None]]
         ] = {}
         self._message_handler: MessageHandlerType | None = None
 
@@ -166,9 +172,17 @@ class TelegramPlatform:
         user_id = str(from_.id)
         msg = query.message
         chat_id = int(msg.chat.id) if msg is not None else 0
+        message_id = int(msg.message_id) if msg is not None else 0
+        # Exact match
         cb = self._callback_handlers.get(data)
         if cb:
-            await cb(data, user_id, chat_id)
+            await cb(data, user_id, chat_id, message_id)
+            return
+        # Prefix match
+        for prefix, handler in self._prefix_handlers.items():
+            if data.startswith(prefix):
+                await handler(data, user_id, chat_id, message_id)
+                return
 
     async def start(self, handler: MessageHandlerType) -> None:
         """Start long-polling. Blocks until stop() is called."""
@@ -188,7 +202,24 @@ class TelegramPlatform:
         )
         app.add_handler(
             CommandHandler(
-                ["start", "stop", "status", "new", "resume", "model", "mode", "help"],
+                [
+                    "start",
+                    "stop",
+                    "new",
+                    "resume",
+                    "model",
+                    "mode",
+                    "help",
+                    "lang",
+                    "quiet",
+                    "status",
+                    "list",
+                    "current",
+                    "history",
+                    "switch",
+                    "delete",
+                    "name",
+                ],
                 self._handle_update,
             )
         )
@@ -316,6 +347,75 @@ class TelegramPlatform:
             )
         except Exception as exc:
             logger.error("TelegramPlatform: send_with_buttons failed", error=exc)
+
+    def register_callback_prefix(
+        self, prefix: str, handler: Callable[[str, str, int, int], Awaitable[None]]
+    ) -> None:
+        """Register a prefix-based callback handler.
+
+        Handler signature: (data, user_id, chat_id, message_id) → Awaitable[None].
+        """
+        self._prefix_handlers[prefix] = handler
+
+    async def send_card(self, ctx: ReplyContext, card: Card) -> int:
+        """Send a Card as HTML + optional InlineKeyboardMarkup. Returns message_id."""
+        if self._app is None:
+            return 0
+        html = card.render_text() or "…"
+        if card.has_buttons():
+            rows = card.collect_buttons()
+            keyboard = [
+                [
+                    InlineKeyboardButton(b.text, callback_data=b.callback_data)
+                    for b in row
+                ]
+                for row in rows
+            ]
+            markup = InlineKeyboardMarkup(keyboard)
+            try:
+                sent = await self._app.bot.send_message(
+                    chat_id=ctx.chat_id,
+                    text=html,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                )
+                return sent.message_id
+            except Exception as exc:
+                logger.error("TelegramPlatform: send_card failed", error=exc)
+                return 0
+        await self._send_html(ctx.chat_id, html)
+        return 0
+
+    async def edit_card(self, ctx: ReplyContext, message_id: int, card: Card) -> None:
+        """Edit an existing message in-place with new Card content."""
+        if self._app is None:
+            return
+        html = card.render_text() or "…"
+        if card.has_buttons():
+            rows = card.collect_buttons()
+            keyboard = [
+                [
+                    InlineKeyboardButton(b.text, callback_data=b.callback_data)
+                    for b in row
+                ]
+                for row in rows
+            ]
+            markup = InlineKeyboardMarkup(keyboard)
+        else:
+            markup = InlineKeyboardMarkup([])
+        try:
+            await self._app.bot.edit_message_text(
+                chat_id=ctx.chat_id,
+                message_id=message_id,
+                text=html,
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+            )
+        except BadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                logger.error("TelegramPlatform: edit_card failed", error=exc)
+        except Exception as exc:
+            logger.error("TelegramPlatform: edit_card failed", error=exc)
 
     async def _send_html(
         self, chat_id: int, html: str, reply_to: int | None = None

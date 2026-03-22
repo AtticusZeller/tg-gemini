@@ -47,6 +47,9 @@ def _make_engine(
     platform.start_typing = AsyncMock(
         return_value=asyncio.create_task(asyncio.sleep(0))
     )
+    platform.send_card = AsyncMock(return_value=42)
+    platform.edit_card = AsyncMock()
+    platform.register_callback_prefix = MagicMock()
     sessions = SessionManager()
     i18n = I18n(lang=Language.EN)
     engine = Engine(
@@ -752,6 +755,9 @@ def _make_engine_real_agent() -> tuple[Engine, GeminiAgent, MagicMock]:
     platform.start_typing = AsyncMock(
         return_value=asyncio.create_task(asyncio.sleep(0))
     )
+    platform.send_card = AsyncMock(return_value=42)
+    platform.edit_card = AsyncMock()
+    platform.register_callback_prefix = MagicMock()
     sessions = SessionManager()
     i18n = I18n(lang=Language.EN)
     engine = Engine(
@@ -918,3 +924,519 @@ async def test_engine_active_gemini_cleaned_up_after_run() -> None:
     await engine._run_gemini(msg, session)
 
     assert msg.session_key not in engine._active_gemini
+
+
+# ---------------------------------------------------------------------------
+# v2 Engine tests: dedup, rate limit, new commands, quiet mode, history
+# ---------------------------------------------------------------------------
+
+
+async def test_engine_dedup_blocks_duplicate() -> None:
+    from tg_gemini.dedup import MessageDedup
+
+    engine, agent, platform = _make_engine()
+    dedup = MessageDedup(ttl_secs=60.0)
+    engine._dedup = dedup
+
+    # Use /help so no _run_gemini involved
+    msg1 = _make_message(content="/help")
+    msg1.message_id = "msg-dup-1"
+    await engine.handle_message(msg1)
+    calls_after_first = platform.send.call_count
+
+    msg2 = _make_message(content="/help")
+    msg2.message_id = "msg-dup-1"  # same ID → dedup blocks
+    await engine.handle_message(msg2)
+    assert platform.send.call_count == calls_after_first  # no new calls
+
+
+async def test_engine_rate_limit_blocks() -> None:
+    from tg_gemini.ratelimit import RateLimiter
+
+    engine, _agent, platform = _make_engine()
+    rl = RateLimiter(max_messages=1, window_secs=60.0)
+    engine._rate_limiter = rl
+
+    # First /help goes through
+    msg1 = _make_message(content="/help")
+    msg1.message_id = "rl-1"
+    await engine.handle_message(msg1)
+
+    # Second /help is rate-limited
+    msg2 = _make_message(content="/help")
+    msg2.message_id = "rl-2"
+    await engine.handle_message(msg2)
+
+    calls = [str(c) for c in platform.send.call_args_list]
+    assert any("limited" in t.lower() or "⏳" in t for t in calls)
+
+
+async def test_engine_start_registers_callbacks() -> None:
+    engine, _agent, platform = _make_engine()
+    await engine.start()
+    # register_callback_prefix should have been called for each prefix
+    assert platform.register_callback_prefix.call_count >= 3
+
+
+async def test_engine_accepts_rate_limiter_and_dedup_params() -> None:
+    from tg_gemini.dedup import MessageDedup
+    from tg_gemini.ratelimit import RateLimiter
+
+    rl = RateLimiter(max_messages=10)
+    dd = MessageDedup(ttl_secs=30.0)
+    engine, _, _ = _make_engine()
+    engine._rate_limiter = rl
+    engine._dedup = dd
+    assert engine._rate_limiter is rl
+    assert engine._dedup is dd
+
+
+# --- New v2 commands ---
+
+
+async def test_cmd_lang_with_arg() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/lang zh")
+    platform.send.assert_called_once()
+    assert engine._i18n.lang.value == "zh"
+
+
+async def test_cmd_lang_invalid_arg() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/lang fr")
+    platform.send.assert_called_once()
+    text = platform.send.call_args[0][1]
+    assert "Unsupported" in text or "fr" in text
+
+
+async def test_cmd_lang_no_arg_sends_card() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/lang")
+    platform.send_card.assert_called_once()
+
+
+async def test_cmd_lang_no_reply_ctx() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    msg.reply_ctx = None
+    await engine.handle_command(msg, "/lang")
+    platform.send.assert_not_called()
+
+
+async def test_cmd_quiet_toggles_on() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/quiet")
+    istate = engine._interactive[msg.session_key]
+    assert istate.quiet is True
+    text = platform.send.call_args[0][1]
+    assert "🔇" in text or "Quiet mode enabled" in text
+
+
+async def test_cmd_quiet_toggles_off() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/quiet")  # enable
+    await engine.handle_command(msg, "/quiet")  # disable
+    istate = engine._interactive[msg.session_key]
+    assert istate.quiet is False
+
+
+async def test_cmd_status_sends_card() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/status")
+    platform.send_card.assert_called_once()
+
+
+async def test_cmd_status_no_reply_ctx() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    msg.reply_ctx = None
+    await engine.handle_command(msg, "/status")
+    platform.send_card.assert_not_called()
+
+
+async def test_cmd_list_sends_card() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    engine._sessions.new_session(msg.session_key)
+    await engine.handle_command(msg, "/list")
+    platform.send_card.assert_called_once()
+
+
+async def test_cmd_list_no_reply_ctx() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    msg.reply_ctx = None
+    await engine.handle_command(msg, "/list")
+    platform.send_card.assert_not_called()
+
+
+async def test_cmd_list_with_page() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    for _ in range(7):
+        engine._sessions.new_session(msg.session_key)
+    await engine.handle_command(msg, "/list 2")
+    platform.send_card.assert_called_once()
+
+
+async def test_cmd_current_with_session() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    s = engine._sessions.new_session(msg.session_key, name="My Session")
+    await engine.handle_command(msg, "/current")
+    platform.send.assert_called_once()
+    text = platform.send.call_args[0][1]
+    assert "My Session" in text or s.id[:8] in text
+
+
+async def test_cmd_current_no_session() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/current")
+    platform.send.assert_called_once()
+
+
+async def test_cmd_history_no_session() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/history")
+    platform.send.assert_called_once()
+    text = platform.send.call_args[0][1]
+    assert "No history" in text or "暂无" in text
+
+
+async def test_cmd_history_with_entries() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    s = engine._sessions.new_session(msg.session_key)
+    s.add_history("user", "first question")
+    s.add_history("assistant", "first answer")
+    await engine.handle_command(msg, "/history")
+    platform.send.assert_called_once()
+    text = platform.send.call_args[0][1]
+    assert "first question" in text or "first answer" in text
+
+
+async def test_cmd_switch_with_valid_target() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    engine._sessions.new_session(msg.session_key, name="Session A")
+    engine._sessions.new_session(msg.session_key, name="Session B")
+    await engine.handle_command(msg, "/switch 1")
+    platform.send.assert_called_once()
+    text = platform.send.call_args[0][1]
+    assert "Switched" in text or "切换" in text
+
+
+async def test_cmd_switch_no_args() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/switch")
+    platform.send.assert_called_once()
+    text = platform.send.call_args[0][1]
+    assert "not found" in text.lower() or "Session not found" in text
+
+
+async def test_cmd_switch_invalid_target() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    engine._sessions.new_session(msg.session_key)
+    await engine.handle_command(msg, "/switch zzz-not-found-zzz")
+    platform.send.assert_called_once()
+    text = platform.send.call_args[0][1]
+    assert "not found" in text.lower() or "zzz" in text
+
+
+async def test_cmd_delete_mode_sends_card() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    engine._sessions.new_session(msg.session_key)
+    await engine.handle_command(msg, "/delete")
+    platform.send_card.assert_called_once()
+    istate = engine._interactive.get(msg.session_key)
+    assert istate is not None
+    assert istate.delete_phase == "select"
+
+
+async def test_cmd_delete_no_reply_ctx() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    msg.reply_ctx = None
+    await engine.handle_command(msg, "/delete")
+    platform.send_card.assert_not_called()
+
+
+async def test_cmd_name_renames_session() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    engine._sessions.new_session(msg.session_key, name="Old Name")
+    await engine.handle_command(msg, "/name New Name")
+    platform.send.assert_called_once()
+    text = platform.send.call_args[0][1]
+    assert "New Name" in text
+    session = engine._sessions.get(msg.session_key)
+    assert session is not None
+    assert session.name == "New Name"
+
+
+async def test_cmd_name_no_session() -> None:
+    engine, _agent, platform = _make_engine()
+    msg = _make_message()
+    await engine.handle_command(msg, "/name Something")
+    platform.send.assert_called_once()
+
+
+# --- Quiet mode suppresses tool notifications ---
+
+
+async def test_quiet_mode_suppresses_tool_use() -> None:
+    engine, agent, platform = _make_engine()
+    msg = _make_message()
+
+    # Enable quiet mode
+    from tg_gemini.engine import _InteractiveState
+
+    engine._interactive[msg.session_key] = _InteractiveState(quiet=True)
+
+    events = [
+        Event(type=EventType.TOOL_USE, tool_name="shell", tool_input="ls"),
+        Event(type=EventType.RESULT, done=True),
+    ]
+    mock_sess = _mock_gemini_session(events)
+    agent.start_session.return_value = mock_sess
+
+    session = engine._sessions.get_or_create(msg.session_key)
+    await engine._run_gemini(msg, session)
+
+    # Tool notification should NOT have been sent
+    calls = [str(c) for c in platform.send.call_args_list]
+    assert not any("shell" in t or "🔧" in t for t in calls)
+
+
+async def test_quiet_mode_suppresses_tool_result() -> None:
+    engine, agent, platform = _make_engine()
+    msg = _make_message()
+
+    from tg_gemini.engine import _InteractiveState
+
+    engine._interactive[msg.session_key] = _InteractiveState(quiet=True)
+
+    events = [
+        Event(type=EventType.TOOL_RESULT, content="file contents here"),
+        Event(type=EventType.RESULT, done=True),
+    ]
+    mock_sess = _mock_gemini_session(events)
+    agent.start_session.return_value = mock_sess
+
+    session = engine._sessions.get_or_create(msg.session_key)
+    await engine._run_gemini(msg, session)
+
+    calls = [str(c) for c in platform.send.call_args_list]
+    assert not any("file contents" in t for t in calls)
+
+
+# --- History tracking ---
+
+
+async def test_history_tracked_after_run() -> None:
+    engine, agent, _platform = _make_engine()
+    msg = _make_message(content="What is 2+2?")
+
+    events = [
+        Event(type=EventType.TEXT, content="4", session_id=""),
+        Event(type=EventType.RESULT, done=True),
+    ]
+    mock_sess = _mock_gemini_session(events)
+    agent.start_session.return_value = mock_sess
+
+    session = engine._sessions.get_or_create(msg.session_key)
+    await engine._run_gemini(msg, session)
+
+    assert len(session.history) >= 2
+    assert session.history[0].role == "user"
+    assert session.history[0].content == "What is 2+2?"
+    assert session.history[1].role == "assistant"
+    assert session.history[1].content == "4"
+
+
+async def test_history_not_tracked_empty_content() -> None:
+    engine, agent, _platform = _make_engine()
+    msg = _make_message(content="")  # empty content
+
+    events = [Event(type=EventType.RESULT, done=True)]
+    mock_sess = _mock_gemini_session(events)
+    agent.start_session.return_value = mock_sess
+
+    from tg_gemini.models import ImageAttachment
+
+    msg.images = [ImageAttachment(mime_type="image/jpeg", data=b"x")]
+
+    session = engine._sessions.get_or_create(msg.session_key)
+    await engine._run_gemini(msg, session)
+
+    # No user entry since content was empty
+    user_entries = [h for h in session.history if h.role == "user"]
+    assert len(user_entries) == 0
+
+
+# --- Callback handlers ---
+
+
+async def test_handle_cmd_callback_list() -> None:
+    engine, _agent, platform = _make_engine()
+    engine._sessions.new_session("telegram:1:2")
+    await engine._handle_cmd_callback("cmd:/list 1", "2", 1, 99)
+    platform.edit_card.assert_called_once()
+
+
+async def test_handle_cmd_callback_delete() -> None:
+    engine, _agent, platform = _make_engine()
+    engine._sessions.new_session("telegram:1:2")
+    await engine._handle_cmd_callback("cmd:/delete", "2", 1, 99)
+    platform.edit_card.assert_called_once()
+
+
+async def test_handle_cmd_callback_unknown_no_crash() -> None:
+    engine, _agent, platform = _make_engine()
+    await engine._handle_cmd_callback("cmd:/unknown", "2", 1, 99)
+    # Should not raise
+
+
+async def test_handle_act_callback_lang() -> None:
+    engine, _agent, platform = _make_engine()
+    await engine._handle_act_callback("act:cmd:/lang zh", "2", 1, 99)
+    assert engine._i18n.lang.value == "zh"
+    platform.edit_card.assert_called_once()
+
+
+async def test_handle_act_callback_switch() -> None:
+    engine, _agent, platform = _make_engine()
+    engine._sessions.new_session("telegram:1:2")
+    engine._sessions.new_session("telegram:1:2")
+    await engine._handle_act_callback("act:cmd:/switch 2", "2", 1, 99)
+    platform.edit_card.assert_called_once()
+
+
+async def test_handle_act_callback_delete_confirm() -> None:
+    engine, _agent, platform = _make_engine()
+    s = engine._sessions.new_session("telegram:1:2")
+    from tg_gemini.engine import _InteractiveState
+
+    engine._interactive["telegram:1:2"] = _InteractiveState(
+        delete_selected={s.id}, delete_phase="select"
+    )
+    await engine._handle_act_callback("act:cmd:/delete confirm", "2", 1, 99)
+    platform.edit_card.assert_called_once()
+    # Session should be deleted
+    assert engine._sessions.find_session(s.id) is None
+
+
+async def test_handle_act_callback_delete_cancel() -> None:
+    engine, _agent, platform = _make_engine()
+    s = engine._sessions.new_session("telegram:1:2")
+    from tg_gemini.engine import _InteractiveState
+
+    engine._interactive["telegram:1:2"] = _InteractiveState(
+        delete_selected={s.id}, delete_phase="select"
+    )
+    await engine._handle_act_callback("act:cmd:/delete cancel", "2", 1, 99)
+    platform.edit_card.assert_called_once()
+    # Session should NOT be deleted
+    assert engine._sessions.find_session(s.id) is not None
+
+
+async def test_handle_act_callback_delete_confirm_no_selection() -> None:
+    engine, _agent, platform = _make_engine()
+    engine._sessions.new_session("telegram:1:2")
+    from tg_gemini.engine import _InteractiveState
+
+    engine._interactive["telegram:1:2"] = _InteractiveState(
+        delete_selected=set(), delete_phase="select"
+    )
+    await engine._handle_act_callback("act:cmd:/delete confirm", "2", 1, 99)
+    platform.edit_card.assert_called_once()
+
+
+async def test_handle_act_callback_unknown_prefix() -> None:
+    engine, _agent, platform = _make_engine()
+    await engine._handle_act_callback("act:other:whatever", "2", 1, 99)
+    # Should not crash
+
+
+async def test_handle_act_callback_unknown_cmd() -> None:
+    engine, _agent, platform = _make_engine()
+    await engine._handle_act_callback("act:cmd:/unknown", "2", 1, 99)
+    # Should not crash
+
+
+async def test_handle_sel_callback_toggle_add() -> None:
+    engine, _agent, platform = _make_engine()
+    s = engine._sessions.new_session("telegram:1:2")
+    await engine._handle_sel_callback(f"sel:delete:{s.id}", "2", 1, 99)
+    istate = engine._interactive.get("telegram:1:2")
+    assert istate is not None
+    assert s.id in istate.delete_selected
+    platform.edit_card.assert_called_once()
+
+
+async def test_handle_sel_callback_toggle_remove() -> None:
+    engine, _agent, platform = _make_engine()
+    s = engine._sessions.new_session("telegram:1:2")
+    from tg_gemini.engine import _InteractiveState
+
+    engine._interactive["telegram:1:2"] = _InteractiveState(
+        delete_selected={s.id}, delete_phase="select"
+    )
+    await engine._handle_sel_callback(f"sel:delete:{s.id}", "2", 1, 99)
+    istate = engine._interactive["telegram:1:2"]
+    assert s.id not in istate.delete_selected
+
+
+async def test_handle_sel_callback_bad_data() -> None:
+    engine, _agent, platform = _make_engine()
+    await engine._handle_sel_callback("sel:bad", "2", 1, 99)
+    # Should not crash (too few parts)
+
+
+# --- _build_list_card pagination ---
+
+
+async def test_build_list_card_pagination() -> None:
+    engine, _, _ = _make_engine()
+    for i in range(7):
+        engine._sessions.new_session("u", name=f"Session {i}")
+    card = engine._build_list_card("u", "2")
+    text = card.render_text()
+    assert "Page" in text or "页" in text
+
+
+async def test_build_list_card_empty() -> None:
+    engine, _, _ = _make_engine()
+    card = engine._build_list_card("u", "")
+    text = card.render_text()
+    assert "No sessions" in text or "暂无" in text
+
+
+async def test_build_list_card_marks_active() -> None:
+    engine, _, _ = _make_engine()
+    engine._sessions.new_session("u", name="Active")
+    card = engine._build_list_card("u", "")
+    text = card.render_text()
+    assert "▶" in text
+
+
+async def test_build_delete_select_card_selected() -> None:
+    from tg_gemini.engine import _InteractiveState
+
+    engine, _, _ = _make_engine()
+    s = engine._sessions.new_session("u")
+    engine._interactive["u"] = _InteractiveState(delete_selected={s.id})
+    card = engine._build_delete_select_card("u")
+    text = card.render_text()
+    assert "☑" in text

@@ -1,13 +1,18 @@
 """Engine: orchestrates Telegram messages → Gemini sessions → streaming replies."""
 
 import asyncio
+import contextlib
+from dataclasses import dataclass, field
 
 from loguru import logger
 
+from tg_gemini.card import Card, CardBuilder, CardButton
 from tg_gemini.config import AppConfig
+from tg_gemini.dedup import MessageDedup
 from tg_gemini.gemini import GeminiAgent, GeminiSession
-from tg_gemini.i18n import I18n, MsgKey
+from tg_gemini.i18n import I18n, Language, MsgKey
 from tg_gemini.models import EventType, Message, ReplyContext
+from tg_gemini.ratelimit import RateLimiter
 from tg_gemini.session import Session, SessionManager
 from tg_gemini.streaming import StreamPreview
 from tg_gemini.telegram_platform import TelegramPlatform
@@ -15,6 +20,16 @@ from tg_gemini.telegram_platform import TelegramPlatform
 __all__ = ["Engine"]
 
 _MAX_QUEUE = 5
+_PAGE_SIZE = 5
+_HISTORY_DISPLAY = 10  # recent history entries shown by /history
+
+
+@dataclass
+class _InteractiveState:
+    quiet: bool = False
+    delete_selected: set[str] = field(default_factory=set)
+    delete_phase: str = ""  # "" | "select" | "confirm"
+    delete_message_id: int = 0
 
 
 class Engine:
@@ -27,17 +42,25 @@ class Engine:
         platform: TelegramPlatform,
         sessions: SessionManager,
         i18n: I18n,
+        rate_limiter: RateLimiter | None = None,
+        dedup: MessageDedup | None = None,
     ) -> None:
         self._config = config
         self._agent = agent
         self._platform = platform
         self._sessions = sessions
         self._i18n = i18n
+        self._rate_limiter = rate_limiter or RateLimiter()
+        self._dedup = dedup or MessageDedup()
         self._queues: dict[str, asyncio.Queue[Message]] = {}
         self._active_gemini: dict[str, GeminiSession] = {}
+        self._interactive: dict[str, _InteractiveState] = {}
 
     async def start(self) -> None:
         """Start the Telegram polling loop."""
+        self._platform.register_callback_prefix("cmd:", self._handle_cmd_callback)
+        self._platform.register_callback_prefix("act:", self._handle_act_callback)
+        self._platform.register_callback_prefix("sel:", self._handle_sel_callback)
         await self._platform.start(self.handle_message)
 
     async def stop(self) -> None:
@@ -55,6 +78,16 @@ class Engine:
 
         content = msg.content.strip()
         if not content and not msg.images and not msg.files:
+            return
+
+        # Dedup check
+        if self._dedup.is_duplicate(msg.message_id):
+            logger.debug("Engine: duplicate message ignored", message_id=msg.message_id)
+            return
+
+        # Rate limit check
+        if not self._rate_limiter.allow(msg.session_key):
+            await self._reply(msg, self._i18n.t(MsgKey.RATE_LIMITED))
             return
 
         # Slash command handling
@@ -95,6 +128,24 @@ class Engine:
                 await self._cmd_model(msg, args)
             case "/mode":
                 await self._cmd_mode(msg, args)
+            case "/lang":
+                await self._cmd_lang(msg, args)
+            case "/quiet":
+                await self._cmd_quiet(msg)
+            case "/status":
+                await self._cmd_status(msg)
+            case "/list":
+                await self._cmd_list(msg, args)
+            case "/current":
+                await self._cmd_current(msg)
+            case "/history":
+                await self._cmd_history(msg)
+            case "/switch":
+                await self._cmd_switch(msg, args)
+            case "/delete":
+                await self._cmd_delete_mode(msg)
+            case "/name":
+                await self._cmd_name(msg, args)
             case _:
                 await self._reply(msg, self._i18n.t(MsgKey.UNKNOWN_CMD))
                 return True
@@ -139,6 +190,7 @@ class Engine:
         typing_task = await self._platform.start_typing(ctx)
 
         gemini_session: GeminiSession | None = None
+        istate = self._interactive.get(msg.session_key)
         try:
             gemini_session = self._agent.start_session(
                 resume_id=session.agent_session_id
@@ -151,6 +203,10 @@ class Engine:
                 update_preview=self._platform.update_message,
                 delete_preview=self._platform.delete_preview,
             )
+
+            # Track user message in history
+            if msg.content:
+                session.add_history("user", msg.content, self._sessions._max_history)
 
             await gemini_session.send(
                 prompt=msg.content, images=msg.images or [], files=msg.files or []
@@ -193,17 +249,18 @@ class Engine:
                         await preview.freeze()
                         preview.detach()
                         tool_used = True
-                        tool_display = event.tool_input
-                        max_len = self._config.display.tool_max_len
-                        if len(tool_display) > max_len:
-                            tool_display = tool_display[:max_len] + "…"
-                        tool_msg = self._i18n.tf(
-                            MsgKey.TOOL_USE, event.tool_name, tool_display
-                        )
-                        await self._platform.send(ctx, tool_msg)
+                        if not (istate and istate.quiet):
+                            tool_display = event.tool_input
+                            max_len = self._config.display.tool_max_len
+                            if len(tool_display) > max_len:
+                                tool_display = tool_display[:max_len] + "…"
+                            tool_msg = self._i18n.tf(
+                                MsgKey.TOOL_USE, event.tool_name, tool_display
+                            )
+                            await self._platform.send(ctx, tool_msg)
 
                     case EventType.TOOL_RESULT:
-                        if event.content:
+                        if not (istate and istate.quiet) and event.content:
                             result_msg = self._i18n.tf(
                                 MsgKey.TOOL_RESULT, event.content
                             )
@@ -224,6 +281,11 @@ class Engine:
                                 await self._platform.send(
                                     ctx, self._i18n.t(MsgKey.EMPTY_RESPONSE)
                                 )
+                        # Track assistant response in history
+                        if full_text:
+                            session.add_history(
+                                "assistant", full_text, self._sessions._max_history
+                            )
                         break
 
         except Exception as exc:
@@ -240,7 +302,194 @@ class Engine:
             ctx: ReplyContext = msg.reply_ctx
             await self._platform.send(ctx, content)
 
-    # --- slash command handlers ---
+    # ── callback routing ──────────────────────────────────────────────────
+
+    async def _handle_cmd_callback(
+        self, data: str, user_id: str, chat_id: int, message_id: int
+    ) -> None:
+        """Re-render command card in-place. data = 'cmd:/list 2'"""
+        cmd_with_args = data[4:]  # strip "cmd:"
+        parts = cmd_with_args.split(maxsplit=1)
+        cmd = parts[0].lower()
+        args = parts[1].strip() if len(parts) > 1 else ""
+        session_key = f"telegram:{chat_id}:{user_id}"
+        ctx = ReplyContext(chat_id=chat_id, message_id=message_id)
+
+        match cmd:
+            case "/list":
+                card = self._build_list_card(session_key, args)
+                await self._platform.edit_card(ctx, message_id, card)
+            case "/delete":
+                card = self._build_delete_select_card(session_key)
+                await self._platform.edit_card(ctx, message_id, card)
+            case _:
+                logger.debug("Engine: unhandled cmd callback", cmd=cmd)
+
+    async def _handle_act_callback(
+        self, data: str, user_id: str, chat_id: int, message_id: int
+    ) -> None:
+        """Execute action and re-render. data = 'act:cmd:/lang zh'"""
+        inner = data[4:]  # strip "act:"
+        session_key = f"telegram:{chat_id}:{user_id}"
+        ctx = ReplyContext(chat_id=chat_id, message_id=message_id)
+
+        if inner.startswith("cmd:"):
+            cmd_with_args = inner[4:]
+            parts = cmd_with_args.split(maxsplit=1)
+            cmd = parts[0].lower()
+            args = parts[1].strip() if len(parts) > 1 else ""
+
+            match cmd:
+                case "/lang":
+                    if args:
+                        with contextlib.suppress(ValueError):
+                            self._i18n.set_lang(Language(args))
+                    card = self._build_lang_card()
+                    await self._platform.edit_card(ctx, message_id, card)
+
+                case "/switch":
+                    if args:
+                        self._sessions.switch_session(session_key, args)
+                    card = self._build_list_card(session_key, "")
+                    await self._platform.edit_card(ctx, message_id, card)
+
+                case "/delete":
+                    match args:
+                        case "confirm":
+                            istate = self._interactive.get(session_key)
+                            if istate and istate.delete_selected:
+                                count = self._sessions.delete_sessions(
+                                    list(istate.delete_selected)
+                                )
+                                istate.delete_selected.clear()
+                                istate.delete_phase = ""
+                                text = self._i18n.tf(MsgKey.SESSION_DELETED, count)
+                                card = CardBuilder().markdown(text).build()
+                                await self._platform.edit_card(ctx, message_id, card)
+                            else:
+                                card = self._build_delete_select_card(session_key)
+                                await self._platform.edit_card(ctx, message_id, card)
+                        case "cancel":
+                            istate = self._interactive.get(session_key)
+                            if istate:
+                                istate.delete_selected.clear()
+                                istate.delete_phase = ""
+                            text = self._i18n.t(MsgKey.SESSION_DELETE_CANCEL)
+                            card = CardBuilder().markdown(text).build()
+                            await self._platform.edit_card(ctx, message_id, card)
+                        case _:
+                            pass
+                case _:
+                    logger.debug("Engine: unhandled act callback", cmd=cmd)
+            return
+
+        logger.debug("Engine: unhandled act callback data", data=data)
+
+    async def _handle_sel_callback(
+        self, data: str, user_id: str, chat_id: int, message_id: int
+    ) -> None:
+        """Toggle selection. data = 'sel:delete:{session_id}'"""
+        parts = data.split(":", 3)
+        if len(parts) < 3:  # "sel", action, target
+            return
+        action = parts[1]
+        target = parts[2]
+        session_key = f"telegram:{chat_id}:{user_id}"
+        ctx = ReplyContext(chat_id=chat_id, message_id=message_id)
+
+        if action == "delete":
+            istate = self._interactive.setdefault(session_key, _InteractiveState())
+            istate.delete_phase = "select"
+            if target in istate.delete_selected:
+                istate.delete_selected.discard(target)
+            else:
+                istate.delete_selected.add(target)
+            card = self._build_delete_select_card(session_key)
+            await self._platform.edit_card(ctx, message_id, card)
+
+    def _make_fake_msg(
+        self, session_key: str, user_id: str, ctx: ReplyContext
+    ) -> Message:
+        return Message(
+            session_key=session_key,
+            platform="telegram",
+            user_id=user_id,
+            user_name="",
+            content="",
+            reply_ctx=ctx,
+        )
+
+    # ── card builders ─────────────────────────────────────────────────────
+
+    def _build_lang_card(self) -> Card:
+        return (
+            CardBuilder()
+            .title(self._i18n.tf(MsgKey.LANG_CURRENT, self._i18n.lang.value))
+            .actions(
+                CardButton("English", "act:cmd:/lang en"),
+                CardButton("中文", "act:cmd:/lang zh"),
+            )
+            .build()
+        )
+
+    def _build_list_card(self, session_key: str, args: str) -> Card:
+        page = 1
+        with contextlib.suppress(ValueError):
+            page = max(1, int(args)) if args else 1
+
+        sessions = self._sessions.list_sessions(session_key)
+        total = len(sessions)
+        total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+        page = min(page, total_pages)
+        start = (page - 1) * _PAGE_SIZE
+        page_sessions = sessions[start : start + _PAGE_SIZE]
+        active_sid = self._sessions.active_session_id(session_key)
+
+        builder = CardBuilder().title(self._i18n.tf(MsgKey.SESSION_LIST_HEADER, total))
+        if not sessions:
+            builder.note(self._i18n.t(MsgKey.SESSION_LIST_EMPTY))
+        else:
+            for i, s in enumerate(page_sessions, start=start + 1):
+                marker = "▶ " if s.id == active_sid else ""
+                btn = (
+                    None
+                    if s.id == active_sid
+                    else CardButton("Switch", f"act:cmd:/switch {i}")
+                )
+                builder.list_item(f"{marker}{i}. {s.summary}", btn)
+            if total_pages > 1:
+                builder.note(self._i18n.tf(MsgKey.PAGE_NAV, page, total_pages))
+                nav_btns: list[CardButton] = []
+                if page > 1:
+                    nav_btns.append(CardButton("◀", f"cmd:/list {page - 1}"))
+                if page < total_pages:
+                    nav_btns.append(CardButton("▶", f"cmd:/list {page + 1}"))
+                if nav_btns:
+                    builder.actions(*nav_btns)
+        return builder.build()
+
+    def _build_delete_select_card(self, session_key: str) -> Card:
+        istate = self._interactive.setdefault(session_key, _InteractiveState())
+        sessions = self._sessions.list_sessions(session_key)
+
+        builder = CardBuilder().title(
+            self._i18n.tf(MsgKey.SESSION_DELETE_CONFIRM, len(istate.delete_selected))
+        )
+        if not sessions:
+            builder.note(self._i18n.t(MsgKey.SESSION_LIST_EMPTY))
+        else:
+            for s in sessions:
+                marker = "☑ " if s.id in istate.delete_selected else "☐ "
+                builder.list_item(
+                    f"{marker}{s.summary}", CardButton("Toggle", f"sel:delete:{s.id}")
+                )
+            builder.actions(
+                CardButton("✅ Confirm", "act:cmd:/delete confirm"),
+                CardButton("❌ Cancel", "act:cmd:/delete cancel"),
+            )
+        return builder.build()
+
+    # ── slash command handlers ────────────────────────────────────────────
 
     async def _cmd_new(self, msg: Message) -> None:
         session = self._sessions.new_session(msg.session_key)
@@ -285,3 +534,99 @@ class Engine:
         else:
             current = self._agent.mode
             await self._reply(msg, self._i18n.tf(MsgKey.MODE_CURRENT, current))
+
+    async def _cmd_lang(self, msg: Message, args: str) -> None:
+        if msg.reply_ctx is None:
+            return
+        if args:
+            try:
+                self._i18n.set_lang(Language(args))
+                await self._reply(msg, self._i18n.tf(MsgKey.LANG_SWITCHED, args))
+            except ValueError:
+                await self._reply(msg, f"Unsupported language: {args}")
+        else:
+            card = self._build_lang_card()
+            await self._platform.send_card(msg.reply_ctx, card)
+
+    async def _cmd_quiet(self, msg: Message) -> None:
+        istate = self._interactive.setdefault(msg.session_key, _InteractiveState())
+        istate.quiet = not istate.quiet
+        key = MsgKey.QUIET_ON if istate.quiet else MsgKey.QUIET_OFF
+        await self._reply(msg, self._i18n.t(key))
+
+    async def _cmd_status(self, msg: Message) -> None:
+        if msg.reply_ctx is None:
+            return
+        session = self._sessions.get(msg.session_key)
+        istate = self._interactive.get(msg.session_key)
+        model = self._agent.model or "(default)"
+        mode = self._agent.mode
+        session_name = session.summary if session else "(none)"
+        quiet_icon = "✅" if (istate and istate.quiet) else "❌"
+        card = (
+            CardBuilder()
+            .title("Status")
+            .markdown(
+                self._i18n.tf(MsgKey.STATUS_INFO, model, mode, session_name, quiet_icon)
+            )
+            .build()
+        )
+        await self._platform.send_card(msg.reply_ctx, card)
+
+    async def _cmd_list(self, msg: Message, args: str) -> None:
+        if msg.reply_ctx is None:
+            return
+        card = self._build_list_card(msg.session_key, args)
+        await self._platform.send_card(msg.reply_ctx, card)
+
+    async def _cmd_current(self, msg: Message) -> None:
+        session = self._sessions.get(msg.session_key)
+        if session:
+            text = self._i18n.tf(MsgKey.SESSION_CURRENT, session.summary)
+        else:
+            text = self._i18n.t(MsgKey.SESSION_LIST_EMPTY)
+        await self._reply(msg, text)
+
+    async def _cmd_history(self, msg: Message) -> None:
+        session = self._sessions.get(msg.session_key)
+        if not session or not session.history:
+            await self._reply(msg, self._i18n.t(MsgKey.SESSION_HISTORY_EMPTY))
+            return
+        header = self._i18n.t(MsgKey.SESSION_HISTORY_HEADER)
+        entries = session.history[-_HISTORY_DISPLAY:]
+        lines = [
+            f"[{e.role}] {e.content[:80]}{'…' if len(e.content) > 80 else ''}"
+            for e in entries
+        ]
+        await self._reply(msg, header + "\n" + "\n".join(lines))
+
+    async def _cmd_switch(self, msg: Message, args: str) -> None:
+        if not args:
+            await self._reply(msg, self._i18n.tf(MsgKey.SESSION_NOT_FOUND, "(none)"))
+            return
+        session = self._sessions.switch_session(msg.session_key, args)
+        if session:
+            await self._reply(
+                msg, self._i18n.tf(MsgKey.SESSION_SWITCHED, session.summary)
+            )
+        else:
+            await self._reply(msg, self._i18n.tf(MsgKey.SESSION_NOT_FOUND, args))
+
+    async def _cmd_delete_mode(self, msg: Message) -> None:
+        if msg.reply_ctx is None:
+            return
+        istate = self._interactive.setdefault(msg.session_key, _InteractiveState())
+        istate.delete_selected.clear()
+        istate.delete_phase = "select"
+        card = self._build_delete_select_card(msg.session_key)
+        mid = await self._platform.send_card(msg.reply_ctx, card)
+        istate.delete_message_id = mid
+
+    async def _cmd_name(self, msg: Message, args: str) -> None:
+        session = self._sessions.get(msg.session_key)
+        if not session:
+            await self._reply(msg, self._i18n.t(MsgKey.SESSION_LIST_EMPTY))
+            return
+        new_name = args.strip()
+        self._sessions.set_session_name(session.id, new_name)
+        await self._reply(msg, self._i18n.tf(MsgKey.SESSION_NAMED, new_name))

@@ -30,12 +30,43 @@ class MsgKey(StrEnum):
     UNKNOWN_CMD = "unknown_cmd"
     EMPTY_RESPONSE = "empty_response"
     SESSION_START_FAILED = "session_start_failed"
+    # v2 additions
+    LANG_SWITCHED = "lang_switched"
+    LANG_CURRENT = "lang_current"
+    QUIET_ON = "quiet_on"
+    QUIET_OFF = "quiet_off"
+    STATUS_INFO = "status_info"
+    SESSION_LIST_HEADER = "session_list_header"
+    SESSION_LIST_EMPTY = "session_list_empty"
+    SESSION_SWITCHED = "session_switched"
+    SESSION_NOT_FOUND = "session_not_found"
+    SESSION_CURRENT = "session_current"
+    SESSION_DELETED = "session_deleted"
+    SESSION_DELETE_CONFIRM = "session_delete_confirm"
+    SESSION_DELETE_CANCEL = "session_delete_cancel"
+    SESSION_HISTORY_HEADER = "session_history_header"
+    SESSION_HISTORY_EMPTY = "session_history_empty"
+    SESSION_NAMED = "session_named"
+    RATE_LIMITED = "rate_limited"
+    PAGE_NAV = "page_nav"
 
 
 MESSAGES: dict[MsgKey, dict[Language, str]] = {
     MsgKey.HELP: {
-        Language.EN: "Commands: /new – new session | /stop – stop agent | /model [name] – switch model | /mode [mode] – switch mode (default/auto_edit/yolo/plan) | /help – this help",
-        Language.ZH: "命令：/new – 新会话 | /stop – 停止 agent | /model [名称] – 切换模型 | /mode [模式] – 切换模式（default/auto_edit/yolo/plan）| /help – 帮助",
+        Language.EN: (
+            "Commands: /new – new session | /list – list sessions | /switch <target> – switch session"
+            " | /delete – delete sessions | /name <new> – rename | /history – view history"
+            " | /current – current session | /status – status info | /lang [code] – set language"
+            " | /quiet – toggle quiet mode | /stop – stop agent | /model [name] – switch model"
+            " | /mode [mode] – switch mode (default/auto_edit/yolo/plan) | /help – this help"
+        ),
+        Language.ZH: (
+            "命令：/new – 新会话 | /list – 会话列表 | /switch <目标> – 切换会话"
+            " | /delete – 删除会话 | /name <名称> – 重命名 | /history – 查看历史"
+            " | /current – 当前会话 | /status – 状态信息 | /lang [语言] – 设置语言"
+            " | /quiet – 切换静音模式 | /stop – 停止 agent | /model [名称] – 切换模型"
+            " | /mode [模式] – 切换模式（default/auto_edit/yolo/plan）| /help – 帮助"
+        ),
     },
     MsgKey.SESSION_BUSY: {
         Language.EN: "⏳ Agent is busy, please wait.",
@@ -75,6 +106,75 @@ MESSAGES: dict[MsgKey, dict[Language, str]] = {
         Language.EN: "❌ Failed to start agent session: {}",
         Language.ZH: "❌ 启动 agent 会话失败：{}",
     },
+    MsgKey.LANG_SWITCHED: {
+        Language.EN: "✅ Language switched to: {}",
+        Language.ZH: "✅ 语言已切换为：{}",
+    },
+    MsgKey.LANG_CURRENT: {
+        Language.EN: "Current language: {}",
+        Language.ZH: "当前语言：{}",
+    },
+    MsgKey.QUIET_ON: {
+        Language.EN: "🔇 Quiet mode enabled.",
+        Language.ZH: "🔇 静音模式已启用。",
+    },
+    MsgKey.QUIET_OFF: {
+        Language.EN: "🔔 Quiet mode disabled.",
+        Language.ZH: "🔔 静音模式已关闭。",
+    },
+    MsgKey.STATUS_INFO: {
+        Language.EN: "Model: {}\nMode: {}\nSession: {}\nQuiet: {}",
+        Language.ZH: "模型：{}\n模式：{}\n会话：{}\n静音：{}",
+    },
+    MsgKey.SESSION_LIST_HEADER: {
+        Language.EN: "Sessions ({} total):",
+        Language.ZH: "会话列表（共 {} 个）：",
+    },
+    MsgKey.SESSION_LIST_EMPTY: {
+        Language.EN: "No sessions found.",
+        Language.ZH: "暂无会话。",
+    },
+    MsgKey.SESSION_SWITCHED: {
+        Language.EN: "✅ Switched to session: {}",
+        Language.ZH: "✅ 已切换到会话：{}",
+    },
+    MsgKey.SESSION_NOT_FOUND: {
+        Language.EN: "Session not found: {}",
+        Language.ZH: "会话未找到：{}",
+    },
+    MsgKey.SESSION_CURRENT: {
+        Language.EN: "Current session: {}",
+        Language.ZH: "当前会话：{}",
+    },
+    MsgKey.SESSION_DELETED: {
+        Language.EN: "{} session(s) deleted.",
+        Language.ZH: "已删除 {} 个会话。",
+    },
+    MsgKey.SESSION_DELETE_CONFIRM: {
+        Language.EN: "Delete {} session(s)?",
+        Language.ZH: "确认删除 {} 个会话？",
+    },
+    MsgKey.SESSION_DELETE_CANCEL: {
+        Language.EN: "Deletion cancelled.",
+        Language.ZH: "已取消删除。",
+    },
+    MsgKey.SESSION_HISTORY_HEADER: {
+        Language.EN: "Recent history:",
+        Language.ZH: "近期历史记录：",
+    },
+    MsgKey.SESSION_HISTORY_EMPTY: {
+        Language.EN: "No history.",
+        Language.ZH: "暂无历史记录。",
+    },
+    MsgKey.SESSION_NAMED: {
+        Language.EN: "✅ Session renamed to: {}",
+        Language.ZH: "✅ 会话已重命名为：{}",
+    },
+    MsgKey.RATE_LIMITED: {
+        Language.EN: "⏳ Rate limited. Try again later.",
+        Language.ZH: "⏳ 请求频率超限，请稍后再试。",
+    },
+    MsgKey.PAGE_NAV: {Language.EN: "Page {} of {}", Language.ZH: "第 {} / {} 页"},
 }
 
 

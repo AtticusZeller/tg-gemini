@@ -18,6 +18,7 @@ __all__ = [
     "GeminiMode",
     "LogConfig",
     "LogLevel",
+    "RateLimitConfig",
     "StreamPreviewConfig",
     "TelegramConfig",
     "load_config",
@@ -62,6 +63,11 @@ class LogConfig(_StrictModel):
     level: LogLevel = "INFO"
 
 
+class RateLimitConfig(_StrictModel):
+    max_messages: _NonNegInt = 0  # 0 = disabled
+    window_secs: float = 60.0
+
+
 class AppConfig(_StrictModel):
     telegram: TelegramConfig
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
@@ -70,6 +76,7 @@ class AppConfig(_StrictModel):
     log: LogConfig = Field(default_factory=LogConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     stream_preview: StreamPreviewConfig = Field(default_factory=StreamPreviewConfig)
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
 
 
 def load_config(path: Path) -> AppConfig:
