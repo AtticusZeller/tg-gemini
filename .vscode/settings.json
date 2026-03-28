@@ -9,5 +9,4 @@
   "files.insertFinalNewline": true,
   "files.trimTrailingWhitespace": true,
   "python.defaultInterpreterPath": "/home/atticuszz/DevSpace/tg-gemini/.venv/bin/python3"
-  
 }
