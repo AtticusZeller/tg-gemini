@@ -53,7 +53,7 @@ def test_cli_start_success(tmp_path: Path) -> None:
     with patch("tg_gemini.cli.start_bot") as mock_start:
         result = runner.invoke(app, ["start", "--config", str(cfg_file)])
         assert result.exit_code == 0
-        assert "Starting bot" in result.stdout
+        assert "starting_bot" in result.stdout
         mock_start.assert_called_once()
 
 
