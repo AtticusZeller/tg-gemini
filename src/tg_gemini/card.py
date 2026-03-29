@@ -59,6 +59,7 @@ class CardNote:
 class CardListItem:
     text: str = ""
     button: CardButton | None = None
+    buttons: list[CardButton] = field(default_factory=list)
 
 
 @dataclass
@@ -99,11 +100,14 @@ class Card:
 
         CardActions → one row of buttons.
         CardListItem with button → one row with a single button.
+        CardListItem with buttons → one row with all buttons.
         """
         rows: list[list[CardButton]] = []
         for elem in self.elements:
             match elem:
                 case CardActions(buttons=btns) if btns:
+                    rows.append(list(btns))
+                case CardListItem(buttons=btns) if btns:
                     rows.append(list(btns))
                 case CardListItem(button=btn) if btn is not None:
                     rows.append([btn])
@@ -155,8 +159,16 @@ class CardBuilder:
         self._card.elements.append(CardNote(text=text))
         return self
 
-    def list_item(self, text: str, button: CardButton | None = None) -> "CardBuilder":
-        self._card.elements.append(CardListItem(text=text, button=button))
+    def list_item(
+        self,
+        text: str,
+        button: CardButton | None = None,
+        *,
+        buttons: list[CardButton] | None = None,
+    ) -> "CardBuilder":
+        self._card.elements.append(
+            CardListItem(text=text, button=button, buttons=buttons or [])
+        )
         return self
 
     def build(self) -> Card:
