@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.16 - 2026-03-29
+
+### 🐛 Bug Fixes
+
+- *(streaming)* Accumulate text even when degraded to ensure fallback reply
+
 ## 0.0.15 - 2026-03-29
 
 ### 🐛 Bug Fixes
