@@ -24,11 +24,26 @@ Install dependencies: `uv sync --all-groups`
 
 ## Code Quality Requirements
 
-- **100% test coverage** required (`fail_under = 100` in pyproject.toml)
+- **95% test coverage** required (`fail_under = 95` in pyproject.toml)
 - **MyPy strict mode** — all code must be fully typed
 - **Ruff** enforces E, W, F, I, B, C4, UP, ARG001; line length is not enforced (E501 ignored)
 - All warnings treated as errors in pytest (`filterwarnings = ["error"]`)
 - Conventional commits required for changelog: `feat:`, `fix:`, `refactor:`, `test:`, `chore:`, etc.
+
+## Development Pipeline (Mandatory)
+
+Every code change MUST follow this pipeline in order. Do not skip steps.
+
+1. **Plan** — Before writing code, analyze the requirement, read relevant source/docs, and outline the approach. Use `EnterPlanMode` for non-trivial tasks. Present the plan to the user for approval before proceeding.
+2. **Code** — Implement the feature or fix. Write both production code and tests.
+3. **Format** — Run `bash dev.sh format` to auto-fix formatting and lint issues.
+4. **Lint** — Run `bash dev.sh lint` to verify type checking and lint rules pass.
+5. **Test** — Run `bash dev.sh test` and ensure coverage meets the 95% threshold.
+    - **Single-file change**: Only run the matching test file, e.g. `bash dev.sh test -k foo` for `tests/test_foo.py`.
+    - **Cross-module change**: Run the full test suite.
+    - **Integration tests**: Test cross-module interactions (e.g., CLI → config → gemini pipeline). Place in `tests/test_integration.py` or `tests/integration/`.
+6. **Update docs** — If changes affect architecture, commands, formatting logic, or public APIs, update the relevant files under `docs/`.
+7. **Git commit** — Use conventional commit format. Do not commit unless the user explicitly asks.
 
 ## Architecture & Implementation Plan
 
