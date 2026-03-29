@@ -6,10 +6,12 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 from loguru import logger
 
@@ -612,7 +614,7 @@ class GeminiAgent:
 
     async def run_stream(
         self, prompt: str, session_id: str, model: str, stop_event: asyncio.Event
-    ) -> "AsyncGenerator[Event, None]":  # type: ignore[name-defined]
+    ) -> "AsyncGenerator[Event, None]":
         """Stream events from a Gemini session with stop/interrupt support.
 
         Args:

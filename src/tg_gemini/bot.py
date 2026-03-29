@@ -7,6 +7,7 @@ import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 from aiogram import Bot, Dispatcher, F, Router
@@ -20,7 +21,9 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
-from tg_gemini.config import AppConfig
+if TYPE_CHECKING:
+    from tg_gemini.config import AppConfig
+
 from tg_gemini.events import (
     ErrorEvent,
     InitEvent,
@@ -200,7 +203,7 @@ def _build_stop_button(reply_msg_id: int) -> InlineKeyboardMarkup:
 @router.callback_query(F.data.startswith("m:"))
 async def callback_model(query: CallbackQuery, sessions: SessionManager) -> None:
     """Handle model selection from the inline keyboard."""
-    if not query.message or not query.from_user:
+    if not query.message or not query.from_user or not query.data:
         return
 
     model_name = query.data[2:]  # strip "m:" prefix
@@ -214,6 +217,7 @@ async def callback_model(query: CallbackQuery, sessions: SessionManager) -> None
         "model_selected_via_keyboard", user_id=query.from_user.id, model=model_name
     )
 
+    assert isinstance(query.message, Message)
     with contextlib.suppress(Exception):
         await query.message.edit_text(
             f"✅ Model set to: <b>{model_name}</b>", parse_mode="HTML"
@@ -224,7 +228,7 @@ async def callback_model(query: CallbackQuery, sessions: SessionManager) -> None
 @router.callback_query(F.data.startswith("r:"))
 async def callback_resume(query: CallbackQuery, sessions: SessionManager) -> None:
     """Handle session resume from the inline keyboard."""
-    if not query.message or not query.from_user:
+    if not query.message or not query.from_user or not query.data:
         return
 
     session_id = query.data[2:]  # strip "r:" prefix
@@ -240,6 +244,7 @@ async def callback_resume(query: CallbackQuery, sessions: SessionManager) -> Non
         session_id=session_id,
     )
 
+    assert isinstance(query.message, Message)
     with contextlib.suppress(Exception):
         await query.message.edit_text(
             f"✅ Resuming session: <code>{session_id}</code>", parse_mode="HTML"
@@ -252,7 +257,7 @@ async def callback_delete(
     query: CallbackQuery, sessions: SessionManager, agent: GeminiAgent
 ) -> None:
     """Handle session deletion from the inline keyboard."""
-    if not query.message or not query.from_user:
+    if not query.message or not query.from_user or not query.data:
         return
 
     target_id = query.data[2:]  # strip "d:" prefix
@@ -270,11 +275,13 @@ async def callback_delete(
             user_id=query.from_user.id,
             session_id=target_id,
         )
+        assert isinstance(query.message, Message)
         with contextlib.suppress(Exception):
             await query.message.edit_text(
                 f"🗑 Deleted session: <code>{target_id}</code>", parse_mode="HTML"
             )
     else:
+        assert isinstance(query.message, Message)
         with contextlib.suppress(Exception):
             await query.message.edit_text("❌ Failed to delete session.")
     await query.answer()
@@ -283,7 +290,7 @@ async def callback_delete(
 @router.callback_query(F.data.startswith("s:"))
 async def callback_stop(query: CallbackQuery, sessions: SessionManager) -> None:
     """Handle stop button press during an active stream."""
-    if not query.from_user:
+    if not query.from_user or not query.data:
         return
 
     try:
@@ -682,7 +689,7 @@ async def _process_stream(
     agent: GeminiAgent,
     session_id: str | None,
     model: str | None,
-    sessions: SessionManager,
+    _sessions: SessionManager,
 ) -> tuple[str, list[str]]:
     if not message.bot:
         return "", []
@@ -699,7 +706,7 @@ async def _process_stream(
 
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         async for event in agent.run_stream(
-            message.text or "", session_id, model, stop_event=stop_evt
+            message.text or "", session_id or "", model or "", stop_event=stop_evt
         ):
             await _handle_event(event, session, state, reply)
             if state.aborted:
@@ -822,7 +829,14 @@ async def start_bot(config: AppConfig) -> None:
     store = SessionStore(_path=sessions_path)
     sessions = await SessionManager.create(store)
 
-    agent = GeminiAgent(config.gemini)
+    agent = GeminiAgent(
+        work_dir=config.gemini.work_dir,
+        model=config.gemini.model,
+        mode=config.gemini.mode,
+        cmd=config.gemini.cmd,
+        api_key=config.gemini.api_key,
+        timeout_mins=config.gemini.timeout_mins,
+    )
 
     # Register graceful shutdown to persist sessions
     shutdown_requested = asyncio.Event()
@@ -836,7 +850,7 @@ async def start_bot(config: AppConfig) -> None:
     loop = asyncio.get_running_loop()
     try:
         for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(_shutdown()))
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(_shutdown()))
     except NotImplementedError:
         # Windows doesn't support add_signal_handler; rely on KeyboardInterrupt
         pass

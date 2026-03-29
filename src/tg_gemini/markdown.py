@@ -368,7 +368,8 @@ def split_message(text: str, max_len: int = 4096) -> list[str]:
                     current.append(open_fence)
                     current_len = len(open_fence) + 1
             # Split the long line into smaller pieces
-            while line:
+            remaining_line = line
+            while remaining_line:
                 remaining = limit - current_len
                 if remaining <= 0:
                     # Flush and start new chunk
@@ -382,12 +383,12 @@ def split_message(text: str, max_len: int = 4096) -> list[str]:
                         current.append(open_fence)
                         current_len = len(open_fence) + 1
                     remaining = limit - current_len
-                take = min(len(line), remaining - 1)  # -1 for newline
+                take = min(len(remaining_line), remaining - 1)  # -1 for newline
                 if take <= 0:
-                    take = min(len(line), limit - 1)
-                current.append(line[:take])
+                    take = min(len(remaining_line), limit - 1)
+                current.append(remaining_line[:take])
                 current_len += take + 1
-                line = line[take:]
+                remaining_line = remaining_line[take:]
             continue
 
         if current_len + line_len > limit and current:
