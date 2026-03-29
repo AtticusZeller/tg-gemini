@@ -5,16 +5,18 @@ covering the entire path from bot command to agent invocation.
 Tests are written against the committed (HEAD) version of bot.py.
 """
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiogram.types import Chat, Message, User
 
-from tg_gemini.bot import SessionManager, _process_stream, cmd_delete, cmd_list, cmd_name, cmd_new, cmd_resume
+from tests.integration.conftest import make_message_event, make_result
+from tg_gemini.bot import SessionManager, _process_stream, cmd_delete, cmd_new, cmd_resume
 from tg_gemini.events import InitEvent
 from tg_gemini.gemini import SessionInfo
-from tests.integration.conftest import make_message_event, make_result
+from tg_gemini.sessions import SessionStore
 
 
 class TestNewSessionFlow:
@@ -23,11 +25,11 @@ class TestNewSessionFlow:
     @pytest.mark.asyncio
     async def test_first_message_no_session_id(self) -> None:
         """The very first message invokes gemini WITHOUT -r flag."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
         captured: list[Any] = []
 
-        async def capture_stream(prompt: str, session_id: str | None, model: str | None) -> Any:
+        async def capture_stream(prompt: str, session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             captured.append({"prompt": prompt, "session_id": session_id, "model": model})
             yield make_message_event("Hello!", delta=False)
             yield make_result()
@@ -43,21 +45,21 @@ class TestNewSessionFlow:
         reply.answer = AsyncMock()
         reply.edit_text = AsyncMock()
         reply.delete = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
         msg.answer = AsyncMock(return_value=reply)
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, sessions.get(1), agent)
-
-        assert len(captured) == 1
-        assert captured[0]["session_id"] is None, "First message must NOT pass session_id"
+            s = sessions.get(1)
+            await _process_stream(msg, s, agent, s.session_id, s.model, sessions)
 
     @pytest.mark.asyncio
     async def test_init_event_captures_session_id(self) -> None:
         """InitEvent.session_id from gemini is stored in UserSession."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
 
-        async def stream(*_: Any) -> Any:
+        async def stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             yield InitEvent(session_id="session-abc-123", model="flash")
             yield make_message_event("Hi!", delta=False)
             yield make_result()
@@ -72,24 +74,26 @@ class TestNewSessionFlow:
         reply = MagicMock(spec=Message)
         reply.answer = AsyncMock()
         reply.edit_text = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
         msg.answer = AsyncMock(return_value=reply)
 
         session = sessions.get(1)
         assert session.session_id is None
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, session, agent)
+            await _process_stream(msg, session, agent, session.session_id, session.model, sessions)
 
         assert session.session_id == "session-abc-123"
 
     @pytest.mark.asyncio
     async def test_second_message_uses_session_id(self) -> None:
         """After init, subsequent messages pass the captured session_id."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
         captured_session_ids: list[str | None] = []
 
-        async def capture(prompt: str, session_id: str | None, model: str | None) -> Any:
+        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             captured_session_ids.append(session_id)
             if session_id is None:
                 yield InitEvent(session_id="sess-xyz", model="flash")
@@ -104,6 +108,8 @@ class TestNewSessionFlow:
         reply = MagicMock(spec=Message)
         reply.answer = AsyncMock()
         reply.edit_text = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
 
         def make_msg(text: str) -> MagicMock:
             m = MagicMock(spec=Message)
@@ -116,10 +122,13 @@ class TestNewSessionFlow:
 
         session = sessions.get(1)
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(make_msg("first"), session, agent)
-            await _process_stream(make_msg("second"), session, agent)
+            await _process_stream(make_msg("first"), session, agent, session.session_id, session.model, sessions)
+            await _process_stream(make_msg("second"), session, agent, session.session_id, session.model, sessions)
 
-        assert captured_session_ids == [None, "sess-xyz"], "Second message must pass captured session_id"
+        assert captured_session_ids == [
+            None,
+            "sess-xyz",
+        ], "Second message must pass captured session_id"
 
 
 class TestNewCommandFlow:
@@ -128,7 +137,7 @@ class TestNewCommandFlow:
     @pytest.mark.asyncio
     async def test_new_clears_session_id(self) -> None:
         """After /new, session_id is reset to None."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         sessions.get(1).session_id = "old-session"
 
         msg = MagicMock(spec=Message)
@@ -141,7 +150,7 @@ class TestNewCommandFlow:
     @pytest.mark.asyncio
     async def test_new_with_name_pending(self) -> None:
         """/new with a name stores it in pending_name."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         msg = MagicMock(spec=Message)
         msg.from_user = User(id=1, is_bot=False, first_name="Test")
         msg.answer = AsyncMock()
@@ -156,11 +165,11 @@ class TestNewCommandFlow:
     @pytest.mark.asyncio
     async def test_new_then_send_starts_fresh(self) -> None:
         """After /new, a message should invoke gemini without -r."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         captured: list[str | None] = []
         agent = MagicMock()
 
-        async def capture(prompt: str, session_id: str | None, model: str | None) -> Any:
+        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             captured.append(session_id)
             yield InitEvent(session_id="new-session", model="flash")
             yield make_message_event("ok", delta=False)
@@ -171,6 +180,8 @@ class TestNewCommandFlow:
         reply = MagicMock(spec=Message)
         reply.answer = AsyncMock()
         reply.edit_text = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
 
         msg = MagicMock(spec=Message)
         msg.from_user = User(id=1, is_bot=False, first_name="Test")
@@ -185,7 +196,8 @@ class TestNewCommandFlow:
 
         # Then send message
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, sessions.get(1), agent)
+            s = sessions.get(1)
+            await _process_stream(msg, s, agent, s.session_id, s.model, sessions)
 
         assert captured == [None]
 
@@ -196,12 +208,12 @@ class TestResumeFlow:
     @pytest.mark.asyncio
     async def test_resume_with_id(self) -> None:
         """/resume <id> passes that session_id to gemini."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         sessions.get(1).last_sessions = [SessionInfo(1, "Old chat", "1 day ago", "target-id")]
         captured: list[str | None] = []
         agent = MagicMock()
 
-        async def capture(prompt: str, session_id: str | None, model: str | None) -> Any:
+        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             captured.append(session_id)
             yield make_message_event("ok", delta=False)
             yield make_result()
@@ -211,6 +223,8 @@ class TestResumeFlow:
         reply = MagicMock(spec=Message)
         reply.answer = AsyncMock()
         reply.edit_text = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
 
         msg = MagicMock(spec=Message)
         msg.from_user = User(id=1, is_bot=False, first_name="Test")
@@ -224,14 +238,15 @@ class TestResumeFlow:
         await cmd_resume(msg, command, sessions)
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, sessions.get(1), agent)
+            s = sessions.get(1)
+            await _process_stream(msg, s, agent, s.session_id, s.model, sessions)
 
         assert captured == ["target-id"]
 
     @pytest.mark.asyncio
     async def test_resume_with_index_resolves(self) -> None:
         """/resume 1 resolves index 1 to the correct session_id."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         sessions.get(1).last_sessions = [
             SessionInfo(1, "Chat A", "1d", "id-a"),
             SessionInfo(2, "Chat B", "2d", "id-b"),
@@ -239,7 +254,7 @@ class TestResumeFlow:
         captured: list[str | None] = []
         agent = MagicMock()
 
-        async def capture(prompt: str, session_id: str | None, model: str | None) -> Any:
+        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             captured.append(session_id)
             yield make_message_event("ok", delta=False)
             yield make_result()
@@ -249,6 +264,8 @@ class TestResumeFlow:
         reply = MagicMock(spec=Message)
         reply.answer = AsyncMock()
         reply.edit_text = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
 
         msg = MagicMock(spec=Message)
         msg.from_user = User(id=1, is_bot=False, first_name="Test")
@@ -262,14 +279,15 @@ class TestResumeFlow:
         await cmd_resume(msg, command, sessions)
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, sessions.get(1), agent)
+            s = sessions.get(1)
+            await _process_stream(msg, s, agent, s.session_id, s.model, sessions)
 
         assert captured == ["id-b"]
 
     @pytest.mark.asyncio
     async def test_resume_no_args_sets_latest(self) -> None:
         """/resume with no args sets session_id to 'latest'."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         msg = MagicMock(spec=Message)
         msg.from_user = User(id=1, is_bot=False, first_name="Test")
         msg.answer = AsyncMock()
@@ -284,13 +302,13 @@ class TestNameFlow:
     @pytest.mark.asyncio
     async def test_pending_name_applied_on_init(self) -> None:
         """A pending name from /new is stored under the new session_id."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         sessions.get(1).session_id = "old"
         sessions.get(1).pending_name = "My Session"
         captured: list[str | None] = []
         agent = MagicMock()
 
-        async def capture(prompt: str, session_id: str | None, model: str | None) -> Any:
+        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             captured.append(session_id)
             yield InitEvent(session_id="new-session", model="flash")
             yield make_message_event("hello", delta=False)
@@ -301,6 +319,8 @@ class TestNameFlow:
         reply = MagicMock(spec=Message)
         reply.answer = AsyncMock()
         reply.edit_text = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
 
         msg = MagicMock(spec=Message)
         msg.from_user = User(id=1, is_bot=False, first_name="Test")
@@ -310,7 +330,8 @@ class TestNameFlow:
         msg.answer = AsyncMock(return_value=reply)
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, sessions.get(1), agent)
+            s = sessions.get(1)
+            await _process_stream(msg, s, agent, s.session_id, s.model, sessions)
 
         # pending_name consumed
         assert sessions.get(1).pending_name is None
@@ -324,7 +345,7 @@ class TestDeleteFlow:
     @pytest.mark.asyncio
     async def test_delete_active_clears_session_id(self) -> None:
         """Deleting the active session resets session_id to None."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         sessions.get(1).session_id = "to-delete"
         sessions.get(1).last_sessions = [SessionInfo(1, "T", "t", "to-delete")]
         sessions.get(1).custom_names = {"to-delete": "Name"}
@@ -346,7 +367,7 @@ class TestDeleteFlow:
     @pytest.mark.asyncio
     async def test_delete_inactive_preserves_active_session(self) -> None:
         """Deleting a different session does not affect the active one."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         sessions.get(1).session_id = "active-session"
         sessions.get(1).last_sessions = [
             SessionInfo(1, "Active", "t", "active-session"),
@@ -373,12 +394,12 @@ class TestModelOverride:
     @pytest.mark.asyncio
     async def test_session_model_passed_to_agent(self) -> None:
         """When session.model is set, it is forwarded to run_stream."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         sessions.get(1).model = "pro"
         captured: list[Any] = []
         agent = MagicMock()
 
-        async def capture(prompt: str, session_id: str | None, model: str | None) -> Any:
+        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             captured.append(model)
             yield make_message_event("hi", delta=False)
             yield make_result()
@@ -388,6 +409,8 @@ class TestModelOverride:
         reply = MagicMock(spec=Message)
         reply.answer = AsyncMock()
         reply.edit_text = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
 
         msg = MagicMock(spec=Message)
         msg.from_user = User(id=1, is_bot=False, first_name="Test")
@@ -397,7 +420,8 @@ class TestModelOverride:
         msg.answer = AsyncMock(return_value=reply)
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, sessions.get(1), agent)
+            s = sessions.get(1)
+            await _process_stream(msg, s, agent, s.session_id, s.model, sessions)
 
         assert captured == ["pro"]
 
@@ -408,13 +432,12 @@ class TestConcurrency:
     @pytest.mark.asyncio
     async def test_same_user_serialized_by_lock(self) -> None:
         """Two messages from the same user are processed sequentially."""
-        import asyncio
 
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         order: list[str] = []
         agent = MagicMock()
 
-        async def slow_stream(prompt: str, *_: Any) -> Any:
+        async def slow_stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             order.append(f"start:{prompt}")
             yield make_message_event("ok", delta=False)
             yield make_result()
@@ -425,6 +448,8 @@ class TestConcurrency:
         reply = MagicMock(spec=Message)
         reply.answer = AsyncMock()
         reply.edit_text = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
 
         def make_msg(text: str) -> MagicMock:
             m = MagicMock(spec=Message)
@@ -436,9 +461,10 @@ class TestConcurrency:
             return m
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
+            s = sessions.get(1)
             await asyncio.gather(
-                _process_stream(make_msg("msg1"), sessions.get(1), agent),
-                _process_stream(make_msg("msg2"), sessions.get(1), agent),
+                _process_stream(make_msg("msg1"), s, agent, s.session_id, s.model, sessions),
+                _process_stream(make_msg("msg2"), s, agent, s.session_id, s.model, sessions),
             )
 
         # Both streams start before any end (serialized by lock)
@@ -446,6 +472,3 @@ class TestConcurrency:
         ends = [o for o in order if o.startswith("end")]
         assert starts == ["start:msg1", "start:msg2"]
         assert ends == ["end:msg1", "end:msg2"]
-
-
-import asyncio

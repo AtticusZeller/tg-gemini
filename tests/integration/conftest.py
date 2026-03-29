@@ -1,23 +1,16 @@
 """Shared fixtures for integration tests against committed (HEAD) bot.py."""
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
-from aiogram.types import Chat, Message, User
+from aiogram.types import Chat, User
 
-from tg_gemini.bot import SessionManager, UserSession
+from tg_gemini.bot import SessionManager
 from tg_gemini.config import AppConfig, GeminiConfig, TelegramConfig
-from tg_gemini.events import (
-    ErrorEvent,
-    InitEvent,
-    MessageEvent,
-    ResultEvent,
-    StreamStats,
-    ToolResultEvent,
-    ToolUseEvent,
-)
-from tg_gemini.gemini import GeminiAgent, SessionInfo
+from tg_gemini.events import MessageEvent, ResultEvent, StreamStats, ToolResultEvent, ToolUseEvent
+from tg_gemini.gemini import GeminiAgent
+from tg_gemini.sessions import SessionStore
 
 
 @pytest.fixture
@@ -47,8 +40,13 @@ def config() -> AppConfig:
 
 
 @pytest.fixture
-def sessions() -> SessionManager:
-    return SessionManager()
+def mock_store() -> MagicMock:
+    return MagicMock(spec=SessionStore)
+
+
+@pytest.fixture
+def sessions(mock_store: MagicMock) -> SessionManager:
+    return SessionManager(mock_store)
 
 
 @pytest.fixture
@@ -56,14 +54,12 @@ def mock_agent() -> MagicMock:
     return MagicMock(spec=GeminiAgent)
 
 
-def make_message_event(content: str, delta: bool = False) -> MessageEvent:
+def make_message_event(content: str, *, delta: bool = False) -> MessageEvent:
     return MessageEvent(role="assistant", content=content, delta=delta)
 
 
 def make_tool_use(
-    tool_id: str = "c1",
-    tool_name: str = "read_file",
-    parameters: dict[str, Any] | None = None,
+    tool_id: str = "c1", tool_name: str = "read_file", parameters: dict[str, Any] | None = None
 ) -> ToolUseEvent:
     return ToolUseEvent(
         tool_id=tool_id, tool_name=tool_name, parameters=parameters or {"file_path": "f.txt"}
@@ -71,9 +67,7 @@ def make_tool_use(
 
 
 def make_tool_result(
-    tool_id: str = "c1",
-    status: str = "success",
-    output: str | None = None,
+    tool_id: str = "c1", status: str = "success", output: str | None = None
 ) -> ToolResultEvent:
     return ToolResultEvent(tool_id=tool_id, status=status, output=output)
 

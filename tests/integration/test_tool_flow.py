@@ -10,9 +10,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiogram.types import Chat, Message, User
 
+from tests.integration.conftest import (
+    make_message_event,
+    make_result,
+    make_tool_result,
+    make_tool_use,
+)
 from tg_gemini.bot import SessionManager, _handle_event, _process_stream
-from tg_gemini.events import InitEvent, ToolResultEvent, ToolUseEvent
-from tests.integration.conftest import make_message_event, make_result, make_tool_result, make_tool_use
+from tg_gemini.events import InitEvent
+from tg_gemini.sessions import SessionStore
 
 
 def _make_tool_msg() -> MagicMock:
@@ -34,9 +40,14 @@ def _make_reply_mock(tool_count: int) -> tuple[MagicMock, MagicMock]:
     reply = MagicMock(spec=Message)
     reply.delete = AsyncMock()
     reply.edit_text = AsyncMock()
+    reply.chat = MagicMock()
+    reply.message_id = 1
     # reply.answer must be AsyncMock so "await reply.answer(...)" works
     reply.answer = AsyncMock(
-        side_effect=[MagicMock(spec=Message) for _ in range(tool_count + 1)]
+        side_effect=[
+            MagicMock(spec=Message, chat=MagicMock(), message_id=i + 1)
+            for i in range(tool_count + 1)
+        ]
     )
 
     msg = MagicMock(spec=Message)
@@ -53,10 +64,10 @@ class TestToolMessageOrdering:
     @pytest.mark.asyncio
     async def test_tools_used_deletes_thinking_sends_new(self) -> None:
         """With tools: Thinking is deleted, final response sent as new message."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
 
-        async def stream(*_: Any) -> Any:
+        async def stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             yield InitEvent(session_id="s1", model="flash")
             yield make_tool_use(tool_id="c1", tool_name="read_file")
             yield make_tool_result(tool_id="c1", status="success", output="content")
@@ -69,7 +80,8 @@ class TestToolMessageOrdering:
         msg.text = "read the file"
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, sessions.get(1), agent)
+            s = sessions.get(1)
+            await _process_stream(msg, s, agent, s.session_id, s.model, sessions)
 
         # Thinking deleted
         reply.delete.assert_called_once()
@@ -79,10 +91,10 @@ class TestToolMessageOrdering:
     @pytest.mark.asyncio
     async def test_no_tools_edits_in_place(self) -> None:
         """Without tools: Thinking is edited in-place, no extra messages sent."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
 
-        async def stream(*_: Any) -> Any:
+        async def stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             yield InitEvent(session_id="s1", model="flash")
             yield make_message_event("Hello!", delta=False)
             yield make_result()
@@ -92,6 +104,8 @@ class TestToolMessageOrdering:
         reply = MagicMock(spec=Message)
         reply.delete = AsyncMock()
         reply.edit_text = AsyncMock()
+        reply.chat = MagicMock()
+        reply.message_id = 1
 
         msg = MagicMock(spec=Message)
         msg.from_user = User(id=1, is_bot=False, first_name="Test")
@@ -101,7 +115,8 @@ class TestToolMessageOrdering:
         msg.answer = AsyncMock(return_value=reply)
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, sessions.get(1), agent)
+            s = sessions.get(1)
+            await _process_stream(msg, s, agent, s.session_id, s.model, sessions)
 
         reply.delete.assert_not_called()
         reply.edit_text.assert_called()
@@ -112,7 +127,7 @@ class TestToolMessageOrdering:
         """Tool result swaps 🔧 to ✅ on success or ❌ on failure in tool_html."""
         from tg_gemini.bot import _StreamState
 
-        session = SessionManager().get(1)
+        session = SessionManager(MagicMock(spec=SessionStore)).get(1)
         state = _StreamState()
 
         # Create a tool message mock and store it
@@ -125,7 +140,9 @@ class TestToolMessageOrdering:
         # Success: icon should be swapped
         await _handle_event(
             make_tool_result(tool_id="c1", status="success", output="content"),
-            session, state, reply
+            session,
+            state,
+            reply,
         )
         tool_msg.edit_text.assert_called_once()
         edited = tool_msg.edit_text.call_args[0][0]
@@ -139,8 +156,7 @@ class TestToolMessageOrdering:
 
         # Failure: icon should be swapped to ❌
         await _handle_event(
-            make_tool_result(tool_id="c1", status="error", output=None),
-            session, state, reply
+            make_tool_result(tool_id="c1", status="error", output=None), session, state, reply
         )
         tool_msg.edit_text.assert_called_once()
         edited = tool_msg.edit_text.call_args[0][0]
@@ -153,14 +169,16 @@ class TestMultipleToolCalls:
     @pytest.mark.asyncio
     async def test_multiple_tools_all_displayed(self) -> None:
         """Each tool call gets its own message via reply.answer."""
-        sessions = SessionManager()
+        sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
 
-        async def stream(*_: Any) -> Any:
+        async def stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
             yield InitEvent(session_id="s1", model="flash")
             yield make_tool_use(tool_id="c1", tool_name="read_file")
             yield make_tool_result(tool_id="c1", status="success", output="content1")
-            yield make_tool_use(tool_id="c2", tool_name="grep_search", parameters={"pattern": "func"})
+            yield make_tool_use(
+                tool_id="c2", tool_name="grep_search", parameters={"pattern": "func"}
+            )
             yield make_tool_result(tool_id="c2", status="success", output="found line")
             yield make_message_event("Done.", delta=False)
             yield make_result()
@@ -171,9 +189,11 @@ class TestMultipleToolCalls:
         msg.text = "analyze"
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, sessions.get(1), agent)
+            s = sessions.get(1)
+            await _process_stream(msg, s, agent, s.session_id, s.model, sessions)
 
         # Thinking deleted after tools
         reply.delete.assert_called_once()
         # 2 tool message calls
-        assert reply.answer.call_count >= 2
+        min_tool_calls = 2
+        assert reply.answer.call_count >= min_tool_calls

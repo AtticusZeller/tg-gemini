@@ -1,5 +1,8 @@
+from unittest.mock import MagicMock
+
 import pytest
 
+from tg_gemini.bot import SessionManager
 from tg_gemini.config import AppConfig, GeminiConfig, TelegramConfig
 
 
@@ -12,3 +15,15 @@ def sample_config() -> AppConfig:
         ),
         gemini=GeminiConfig(model="flash", approval_mode="default", working_dir="."),
     )
+
+
+@pytest.fixture
+def mock_store() -> MagicMock:
+    from tg_gemini.sessions import SessionStore
+
+    return MagicMock(spec=SessionStore)
+
+
+@pytest.fixture
+def mock_sessions(mock_store: MagicMock) -> SessionManager:
+    return SessionManager(mock_store)
