@@ -1,11 +1,11 @@
-import logging
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
+import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 class EventType(StrEnum):
@@ -87,7 +87,7 @@ GeminiEvent = InitEvent | MessageEvent | ToolUseEvent | ToolResultEvent | ErrorE
 
 def parse_event(data: dict[str, Any]) -> GeminiEvent:
     event_type = data.get("type")
-    logger.debug("Parsing event: %s", event_type)
+    logger.debug("parsing_event", event_type=event_type)
     if event_type == EventType.INIT:
         return InitEvent.model_validate(data)
     if event_type == EventType.MESSAGE:
