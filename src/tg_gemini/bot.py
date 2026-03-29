@@ -1,16 +1,26 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import html as html_mod
+import signal
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import structlog
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import BotCommand, Message
+from aiogram.types import (
+    BotCommand,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from aiogram.utils.chat_action import ChatActionSender
 
-from tg_gemini.config import MODEL_ALIASES, AppConfig
+from tg_gemini.config import AppConfig
 from tg_gemini.events import (
     ErrorEvent,
     InitEvent,
@@ -21,6 +31,7 @@ from tg_gemini.events import (
 )
 from tg_gemini.gemini import GeminiAgent, SessionInfo
 from tg_gemini.markdown import md_to_telegram_html, split_message_code_fence_aware
+from tg_gemini.sessions import PersistedSession, SessionStore
 
 logger = structlog.get_logger()
 
@@ -37,15 +48,37 @@ class UserSession:
     session_id: str | None = None
     model: str | None = None
     active: bool = True
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Guards mutations of session_id, model, custom_names.
+    # Held for microseconds, NOT for the entire streaming duration.
+    mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_sessions: list[SessionInfo] = field(default_factory=list)
     custom_names: dict[str, str] = field(default_factory=dict)
     pending_name: str | None = None
+    # Set by the stop button to abort the current in-flight stream.
+    # Not persisted — only meaningful during an active stream.
+    stop_event: asyncio.Event | None = None
 
 
 class SessionManager:
-    def __init__(self) -> None:
+    """Manages per-user sessions, backed by an optional SessionStore for persistence."""
+
+    def __init__(self, store: SessionStore | None = None) -> None:
+        self._store = store
         self._sessions: dict[int, UserSession] = {}
+
+    @classmethod
+    async def create(cls, store: SessionStore) -> SessionManager:
+        """Factory: loads persisted sessions from disk and returns a ready manager."""
+        self = cls(store)
+        persisted = await store.load()
+        for uid, data in persisted.items():
+            self._sessions[uid] = UserSession(
+                session_id=data.session_id,
+                model=data.model,
+                custom_names=data.custom_names,
+            )
+        logger.info("sessions_restored", count=len(self._sessions))
+        return self
 
     def get(self, user_id: int) -> UserSession:
         if user_id not in self._sessions:
@@ -55,12 +88,202 @@ class SessionManager:
             logger.debug("session_retrieved", user_id=user_id)
         return self._sessions[user_id]
 
+    async def save(self, user_id: int) -> None:
+        """Persist one user's session state to disk after mutations."""
+        if self._store is None:
+            return
+        session = self._sessions.get(user_id)
+        if session is None:
+            return
+        await self._store.save(
+            user_id,
+            PersistedSession(
+                session_id=session.session_id,
+                model=session.model,
+                custom_names=session.custom_names,
+            ),
+        )
+
+    async def shutdown(self) -> None:
+        """Persist all sessions to disk and release resources. Call on SIGTERM/SIGINT."""
+        if self._store is None:
+            return
+        all_sessions = {
+            uid: PersistedSession(
+                session_id=s.session_id,
+                model=s.model,
+                custom_names=s.custom_names,
+            )
+            for uid, s in self._sessions.items()
+        }
+        await self._store.save_all(all_sessions)
+        logger.info("sessions_persisted_on_shutdown", count=len(all_sessions))
+
 
 def _is_authorized(user_id: int, allowed_ids: list[int]) -> bool:
     return not allowed_ids or user_id in allowed_ids
 
 
 router = Router()
+
+# ── Inline keyboard builders ────────────────────────────────────────────────────
+
+
+def _build_model_keyboard() -> InlineKeyboardMarkup:
+    """Build a one-row keyboard with all available model aliases."""
+    models = ["auto", "pro", "flash", "flash-lite"]
+    row = [InlineKeyboardButton(text=m, callback_data=f"m:{m}") for m in models]
+    return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
+def _build_session_keyboard(
+    sessions: list[SessionInfo], active_id: str | None, custom_names: dict[str, str]
+) -> InlineKeyboardMarkup | None:
+    """Build a keyboard where each session is a row with Resume + Delete buttons.
+
+    Returns None if the session list is empty.
+    """
+    if not sessions:
+        return None
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for s in sessions:
+        title = custom_names.get(s.session_id, s.title)
+        # Truncate long titles so they don't blow out Telegram's 64-char callback limit
+        display = title[:30] + "…" if len(title) > 30 else title
+        time_str = f" ({s.time})" if s.time else ""
+
+        if s.session_id == active_id:
+            # Active session: Resume becomes a non-clickable "Current" label
+            resume_btn = InlineKeyboardButton(text="Current", callback_data="noop:current")
+        else:
+            resume_btn = InlineKeyboardButton(
+                text="Resume",
+                callback_data=f"r:{s.session_id}",
+            )
+
+        delete_btn = InlineKeyboardButton(
+            text="Delete",
+            callback_data=f"d:{s.session_id}",
+        )
+
+        rows.append(
+            [
+                InlineKeyboardButton(text=f"📄 {display}{time_str}", callback_data="noop:info"),
+                resume_btn,
+                delete_btn,
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_stop_button(reply_msg_id: int) -> InlineKeyboardMarkup:
+    """Build a single stop button for an in-progress stream."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⏹ Stop", callback_data=f"s:{reply_msg_id}")]
+        ]
+    )
+
+
+# ── Callback query handlers ─────────────────────────────────────────────────────
+
+
+@router.callback_query(F.data.startswith("m:"))
+async def callback_model(query: CallbackQuery, sessions: SessionManager) -> None:
+    """Handle model selection from the inline keyboard."""
+    if not query.message or not query.from_user:
+        return
+
+    model_name = query.data[2:]  # strip "m:" prefix
+    session = sessions.get(query.from_user.id)
+
+    async with session.mutation_lock:
+        session.model = model_name
+
+    await sessions.save(query.from_user.id)
+    logger.info("model_selected_via_keyboard", user_id=query.from_user.id, model=model_name)
+
+    with contextlib.suppress(Exception):
+        await query.message.edit_text(
+            f"✅ Model set to: <b>{model_name}</b>",
+            parse_mode="HTML",
+        )
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("r:"))
+async def callback_resume(query: CallbackQuery, sessions: SessionManager) -> None:
+    """Handle session resume from the inline keyboard."""
+    if not query.message or not query.from_user:
+        return
+
+    session_id = query.data[2:]  # strip "r:" prefix
+    session = sessions.get(query.from_user.id)
+
+    async with session.mutation_lock:
+        session.session_id = session_id
+
+    await sessions.save(query.from_user.id)
+    logger.info("session_resumed_via_keyboard", user_id=query.from_user.id, session_id=session_id)
+
+    with contextlib.suppress(Exception):
+        await query.message.edit_text(f"✅ Resuming session: <code>{session_id}</code>", parse_mode="HTML")
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("d:"))
+async def callback_delete(
+    query: CallbackQuery, sessions: SessionManager, agent: GeminiAgent
+) -> None:
+    """Handle session deletion from the inline keyboard."""
+    if not query.message or not query.from_user:
+        return
+
+    target_id = query.data[2:]  # strip "d:" prefix
+    session = sessions.get(query.from_user.id)
+
+    success = await agent.delete_session(target_id)
+    if success:
+        async with session.mutation_lock:
+            if session.session_id == target_id:
+                session.session_id = None
+            session.custom_names.pop(target_id, None)
+        await sessions.save(query.from_user.id)
+        logger.info("session_deleted_via_keyboard", user_id=query.from_user.id, session_id=target_id)
+        with contextlib.suppress(Exception):
+            await query.message.edit_text(f"🗑 Deleted session: <code>{target_id}</code>", parse_mode="HTML")
+    else:
+        with contextlib.suppress(Exception):
+            await query.message.edit_text("❌ Failed to delete session.")
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("s:"))
+async def callback_stop(query: CallbackQuery, sessions: SessionManager) -> None:
+    """Handle stop button press during an active stream."""
+    if not query.from_user:
+        return
+
+    try:
+        _ = int(query.data[2:])  # message_id, for future reference
+    except ValueError:
+        await query.answer("Already stopped.", show_alert=True)
+        return
+
+    session = sessions.get(query.from_user.id)
+    if session.stop_event is not None:
+        session.stop_event.set()
+        logger.info("stream_stop_requested", user_id=query.from_user.id)
+
+    await query.answer("Stopping…")
+
+
+@router.callback_query(F.data.startswith("noop:"))
+async def callback_noop(query: CallbackQuery) -> None:
+    """Acknowledge non-action button presses (e.g., session title labels)."""
+    await query.answer()  # dismiss loading indicator, no other action
 
 
 @router.message(Command("start"))
@@ -90,8 +313,10 @@ async def cmd_new(message: Message, command: CommandObject, sessions: SessionMan
         return
     logger.info("command_new", user_id=message.from_user.id, args=command.args)
     session = sessions.get(message.from_user.id)
-    session.session_id = None
-    session.pending_name = command.args or None
+    async with session.mutation_lock:
+        session.session_id = None
+        session.pending_name = command.args or None
+    await sessions.save(message.from_user.id)
 
     msg = "Session cleared. Next message starts a new conversation"
     if session.pending_name:
@@ -120,10 +345,19 @@ async def cmd_list(message: Message, sessions: SessionManager, agent: GeminiAgen
     logger.info("command_list", user_id=message.from_user.id)
     session = sessions.get(message.from_user.id)
     session.last_sessions = await agent.list_sessions()
-    text = await _format_session_list(
+
+    keyboard = _build_session_keyboard(
         session.last_sessions, session.session_id, session.custom_names
     )
-    await message.answer(md_to_telegram_html(text), parse_mode="HTML")
+
+    if keyboard is None:
+        await message.answer("No sessions found.")
+        return
+
+    await message.answer(
+        "Your sessions — tap Resume or Delete:",
+        reply_markup=keyboard,
+    )
 
 
 def _resolve_id(arg: str, last_sessions: list[SessionInfo]) -> str:
@@ -147,8 +381,9 @@ async def cmd_name(message: Message, command: CommandObject, sessions: SessionMa
     if not command.args:
         await message.answer("Usage: /name <new_name>")
         return
-
-    session.custom_names[session.session_id] = command.args
+    async with session.mutation_lock:
+        session.custom_names[session.session_id] = command.args
+    await sessions.save(message.from_user.id)
     await message.answer(f"Session renamed to: {command.args}")
 
 
@@ -160,10 +395,14 @@ async def cmd_resume(message: Message, command: CommandObject, sessions: Session
     session = sessions.get(message.from_user.id)
     if command.args:
         target_id = _resolve_id(command.args, session.last_sessions)
-        session.session_id = target_id
+        async with session.mutation_lock:
+            session.session_id = target_id
+        await sessions.save(message.from_user.id)
         await message.answer(f"Resuming session: <code>{target_id}</code>", parse_mode="HTML")
     else:
-        session.session_id = "latest"
+        async with session.mutation_lock:
+            session.session_id = "latest"
+        await sessions.save(message.from_user.id)
         await message.answer("Resuming latest session.")
 
 
@@ -183,9 +422,11 @@ async def cmd_delete(
 
     success = await agent.delete_session(target_id)
     if success:
-        if session.session_id == target_id:
-            session.session_id = None
-        session.custom_names.pop(target_id, None)
+        async with session.mutation_lock:
+            if session.session_id == target_id:
+                session.session_id = None
+            session.custom_names.pop(target_id, None)
+        await sessions.save(message.from_user.id)
         await message.answer(f"Deleted session: <code>{target_id}</code>", parse_mode="HTML")
     else:
         await message.answer("Failed to delete session.")
@@ -197,11 +438,15 @@ async def cmd_model(message: Message, command: CommandObject, sessions: SessionM
         return
     logger.info("command_model", user_id=message.from_user.id, args=command.args)
     if not command.args:
-        aliases = ", ".join(sorted(MODEL_ALIASES.keys()))
-        await message.answer(f"Usage: /model <name>\nAliases: {aliases}")
+        await message.answer(
+            "Select a model:",
+            reply_markup=_build_model_keyboard(),
+        )
         return
     session = sessions.get(message.from_user.id)
-    session.model = command.args
+    async with session.mutation_lock:
+        session.model = command.args
+    await sessions.save(message.from_user.id)
     await message.answer(f"Model set to: {command.args}")
 
 
@@ -348,10 +593,18 @@ async def _handle_event(
     """Process a single stream event, updating state and UI."""
     if isinstance(event, InitEvent):
         logger.debug("stream_init", session_id=event.session_id, model=event.model)
-        session.session_id = event.session_id
-        if session.pending_name and event.session_id:
-            session.custom_names[event.session_id] = session.pending_name
-            session.pending_name = None
+        async with session.mutation_lock:
+            session.session_id = event.session_id
+            if session.pending_name and event.session_id:
+                session.custom_names[event.session_id] = session.pending_name
+                session.pending_name = None
+        # Inject the stop button so the user can abort this stream
+        if reply.chat and reply.message_id:
+            with contextlib.suppress(Exception):
+                await reply.edit_text(
+                    "Thinking…",
+                    reply_markup=_build_stop_button(reply.message_id),
+                )
     elif isinstance(event, MessageEvent) and event.role == "assistant":
         state.accumulated = (state.accumulated + event.content) if event.delta else event.content
         state.last_update_time, state.last_update_len = await _throttle_edit(
@@ -372,7 +625,7 @@ async def _handle_event(
             await tool_msg.edit_text(new_html, parse_mode="HTML")
     elif isinstance(event, ErrorEvent):
         logger.error("stream_error", severity=event.severity, message=event.message)
-        await reply.edit_text(f"Error: {event.message}")
+        await reply.edit_text(f"Error: {event.message}", reply_markup=None)
         state.aborted = True
     elif isinstance(event, ResultEvent) and event.stats:
         s = event.stats
@@ -386,22 +639,39 @@ async def _handle_event(
 
 
 async def _process_stream(
-    message: Message, session: UserSession, agent: GeminiAgent
+    message: Message,
+    session: UserSession,
+    agent: GeminiAgent,
+    session_id: str | None,
+    model: str | None,
+    sessions: SessionManager,
 ) -> tuple[str, list[str]]:
     if not message.bot:
         return "", []
 
     logger.info("stream_started", user_id=message.from_user.id if message.from_user else None)
-    reply = await message.answer("Thinking...")
+    reply = await message.answer("Thinking…")
     state = _StreamState(last_update_time=time.monotonic())
 
+    # Wire up stop signal so the /stop button can abort this stream
+    stop_evt = asyncio.Event()
+    session.stop_event = stop_evt
+
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        async for event in agent.run_stream(message.text or "", session.session_id, session.model):
+        async for event in agent.run_stream(
+            message.text or "", session_id, model, stop_event=stop_evt
+        ):
             await _handle_event(event, session, state, reply)
             if state.aborted:
-                return "", []
+                break
 
-    if state.accumulated:
+    # Clean up stop event reference
+    session.stop_event = None
+
+    if state.aborted:
+        # Error or stop already handled by _handle_event — don't overwrite
+        pass
+    elif state.accumulated:
         if state.tool_messages:
             # Tools were used: delete "Thinking..." and send response as new message
             # so it appears AFTER tool messages in correct order
@@ -415,7 +685,7 @@ async def _process_stream(
             await _send_final(reply, state.accumulated)
     elif not state.tool_messages:
         logger.debug("stream_no_response")
-        await reply.edit_text("No response.")
+        await reply.edit_text("No response.", reply_markup=None)
 
     if state.stats_footer:
         with contextlib.suppress(Exception):
@@ -437,8 +707,16 @@ async def handle_message(
     if not session.active:
         return
 
-    async with session.lock:
-        await _process_stream(message, session, agent)
+    # Capture session state BEFORE streaming. These locals remain stable even if
+    # concurrent commands mutate the session object during the stream.
+    session_id = session.session_id
+    model = session.model
+
+    # Stream WITHOUT holding any lock — commands remain unblocked
+    await _process_stream(message, session, agent, session_id, model, sessions)
+
+    # Persist session state after the stream completes
+    await sessions.save(message.from_user.id)
 
 
 async def _edit_reply(reply: Message, accumulated: str) -> None:
@@ -459,7 +737,7 @@ async def _send_final(reply: Message, accumulated: str) -> None:
         return
 
     with contextlib.suppress(Exception):
-        await reply.edit_text(chunks[0], parse_mode="HTML")
+        await reply.edit_text(chunks[0], parse_mode="HTML", reply_markup=None)
 
     if reply.bot:
         for chunk in chunks[1:]:
@@ -495,8 +773,36 @@ async def start_bot(config: AppConfig) -> None:
     dp = Dispatcher()
     dp.include_router(router)
 
-    sessions = SessionManager()
+    # Create store and load persisted sessions
+    sessions_path = Path.home() / ".config" / "tg-gemini" / "sessions.json"
+    store = SessionStore(_path=sessions_path)
+    sessions = await SessionManager.create(store)
+
     agent = GeminiAgent(config.gemini)
 
+    # Register graceful shutdown to persist sessions
+    shutdown_requested = asyncio.Event()
+
+    async def _shutdown() -> None:
+        logger.info("shutdown_signal_received")
+        await sessions.shutdown()
+        await bot.session.close()
+        shutdown_requested.set()
+
+    loop = asyncio.get_running_loop()
+    try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(_shutdown()))
+    except NotImplementedError:
+        # Windows doesn't support add_signal_handler; rely on KeyboardInterrupt
+        pass
+
     logger.info("bot_polling_started")
-    await dp.start_polling(bot, sessions=sessions, agent=agent, config=config)
+    try:
+        polling_task = asyncio.create_task(
+            dp.start_polling(bot, sessions=sessions, agent=agent, config=config)
+        )
+        await asyncio.gather(polling_task, shutdown_requested.wait())
+    finally:
+        # Final fallback persist (in case polling exits without a signal)
+        await sessions.shutdown()
