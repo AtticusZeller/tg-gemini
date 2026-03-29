@@ -84,7 +84,7 @@ Located in `config.toml` under `[[projects.platforms]]`:
 
 ### 3.2 Mapping Mechanism
 - **Context Preservation:** Gemini CLI's native session ID is stored in the Engine's session store.
-- **Bi-directional ID Sync:** 
+- **Bi-directional ID Sync:**
     - When the CLI starts, it provides an ID (`EventInit`).
     - The Engine saves this ID to its local storage.
     - Subsequent messages for the same `SessionKey` use this ID with `--resume`.

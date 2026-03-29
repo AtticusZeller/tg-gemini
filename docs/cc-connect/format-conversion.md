@@ -68,7 +68,7 @@ When a structured `Card` (used for interactive menus or status reports) is sent 
 
 Messaging platforms often have a maximum message length (e.g., 4096 characters for Telegram). If a long message is split in the middle of a code block, it breaks the formatting.
 
-- **Logic:** This utility splits the text into chunks but detects if a chunk ends inside a ` ``` ` block. 
+- **Logic:** This utility splits the text into chunks but detects if a chunk ends inside a ` ``` ` block.
 - **Repair:** If it does, it automatically appends a closing ` ``` ` to the current chunk and prepends an opening ` ``` ` to the next chunk, ensuring every message fragment is syntactically valid HTML/Markdown.
 
 ---

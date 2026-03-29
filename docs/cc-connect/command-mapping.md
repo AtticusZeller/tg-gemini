@@ -25,7 +25,7 @@ When a user sends a `/` command in Telegram, `cc-connect` intercepts it before f
 Every non-command message in Telegram follows this transformation:
 
 1.  **Telegram:** User sends "How many files are here?"
-2.  **cc-connect (Engine):** 
+2.  **cc-connect (Engine):**
     - Identifies `SessionKey`: `telegram:123456:789`
     - Retrieves stored `AgentSessionID` for this key (e.g., `abc-xyz`).
 3.  **cc-connect (Agent):** Executes the following shell command:

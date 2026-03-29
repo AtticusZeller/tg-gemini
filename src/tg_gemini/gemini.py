@@ -46,7 +46,11 @@ class GeminiAgent:
         return args
 
     async def run_stream(
-        self, prompt: str, session_id: str | None = None, model: str | None = None
+        self,
+        prompt: str,
+        session_id: str | None = None,
+        model: str | None = None,
+        stop_event: asyncio.Event | None = None,
     ) -> AsyncIterator[GeminiEvent]:
         args = self._build_args(prompt, session_id, model)
         logger.debug("gemini_cli_exec", command=" ".join(args))
@@ -65,7 +69,18 @@ class GeminiAgent:
 
         if proc.stdout:
             while True:
-                line = await proc.stdout.readline()
+                if stop_event is not None and stop_event.is_set():
+                    logger.info("gemini_stream_stopped_by_user")
+                    proc.terminate()
+                    yield ErrorEvent(severity="info", message="⏹ Stopped by user.")
+                    break
+
+                # readline with timeout so we can check stop_event periodically
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=0.5)
+                except TimeoutError:
+                    continue
+
                 if not line:
                     break
                 event = self._parse_line(line.decode())
@@ -127,8 +142,6 @@ class GeminiAgent:
                     )
             return sessions
 
-        logger.debug("list_sessions_done", count=len(sessions))
-
     async def delete_session(self, session_id_or_index: str) -> bool:
         """Delete a session by ID or index."""
         logger.info("delete_session", session_id=session_id_or_index)
@@ -145,5 +158,7 @@ class GeminiAgent:
         except FileNotFoundError:
             return False
         else:
-            logger.debug("delete_session_done", success=proc.returncode == 0, returncode=proc.returncode)
+            logger.debug(
+                "delete_session_done", success=proc.returncode == 0, returncode=proc.returncode
+            )
             return proc.returncode == 0

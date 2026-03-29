@@ -8,7 +8,7 @@ show_help() {
     echo "Commands:"
     echo "  format   Run code formatting (Ruff)"
     echo "  lint     Run linters and type checking (Ruff, ty)"
-    echo "  test     Run tests with coverage (Pytest)"
+    echo "  test     Run tests with coverage (Pytest); accepts pytest args, e.g. -k foo"
     echo "  docs     Manage documentation (dev, build, deploy)"
     echo "  bump     Bump version and update changelog"
     echo "  check    Run full pre-commit pipeline (Format, Lint, Tests, pre-commit)"

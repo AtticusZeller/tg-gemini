@@ -27,6 +27,9 @@ The conversion logic resides in `src/tg_gemini/markdown.py`. It uses a multi-pha
 - **Links:** `[text](url)` -> `<a href="url">text</a>`
 - **Headings:** `# Heading` -> `<b>Heading</b>` (Headings are flattened to bold).
 - **Lists:** `- item` or `* item` -> `• item`
+- **Horizontal Rules:** `---` or `***` -> `——————————`
+- **Wikilinks:** `[[Link|Text]]` -> `Text`, `[[Link]]` -> `Link`
+- **Callouts (Obsidain):** `> [!info] Title` -> `<b>info: Title</b>` (Supported types include info, warn, error, etc.)
 
 ### Phase 4: Reinsertion
 - The protected code blocks and inline code are reinserted into the final string, wrapped in `<pre><code>` or `<code>` tags respectively.
