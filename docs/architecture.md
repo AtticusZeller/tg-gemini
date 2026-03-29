@@ -130,7 +130,7 @@ src/tg_gemini/
 ├── ratelimit.py         # 滑动窗口速率限制器
 └── dedup.py             # TTL 消息去重
 
-tests/                   # 717 个测试，98.52% 覆盖率
+tests/                   # 867 个测试，96.6% 覆盖率
 ├── test_config.py
 ├── test_engine.py
 ├── test_gemini.py
@@ -138,14 +138,20 @@ tests/                   # 717 个测试，98.52% 覆盖率
 ├── test_markdown.py
 ├── test_models.py
 ├── test_session.py
+├── test_sessions.py
 ├── test_streaming.py
 ├── test_telegram.py
+├── test_bot.py
+├── test_events.py
 ├── test_cli.py
 ├── test_card.py
 ├── test_ratelimit.py
 ├── test_dedup.py
 ├── test_commands.py
-└── test_skills.py
+├── test_skills.py
+└── integration/
+    ├── test_session_lifecycle.py
+    └── test_tool_flow.py
 ```
 
 ## 关键设计决策

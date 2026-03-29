@@ -742,7 +742,9 @@ async def handle_message(
 ) -> None:
     if not message.from_user or not message.text:
         return
-    if not _is_authorized(message.from_user.id, _parse_allowed_ids(config.telegram.allow_from)):
+    if not _is_authorized(
+        message.from_user.id, _parse_allowed_ids(config.telegram.allow_from)
+    ):
         return
 
     session = sessions.get(message.from_user.id)

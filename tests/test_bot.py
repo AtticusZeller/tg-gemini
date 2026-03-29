@@ -139,7 +139,9 @@ async def test_cmd_current() -> None:
     message.from_user = User(id=1, is_bot=False, first_name="Test")
     message.answer = AsyncMock()
     sessions = SessionManager()
-    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN), gemini=GeminiConfig(work_dir="auto"))
+    config = AppConfig(
+        telegram=TelegramConfig(token=VALID_TOKEN), gemini=GeminiConfig(work_dir="auto")
+    )
     await cmd_current(message, sessions, config)
     message.answer.assert_called_once()
     assert "Current Model:" in message.answer.call_args[0][0]
@@ -341,7 +343,9 @@ async def test_cmd_current_with_name() -> None:
     sessions = SessionManager()
     sessions.get(1).session_id = "id-1"
     sessions.get(1).custom_names = {"id-1": "My Session"}
-    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN), gemini=GeminiConfig(work_dir="auto"))
+    config = AppConfig(
+        telegram=TelegramConfig(token=VALID_TOKEN), gemini=GeminiConfig(work_dir="auto")
+    )
     await cmd_current(message, sessions, config)
     assert "Current Session:" in message.answer.call_args[0][0]
 
@@ -455,7 +459,10 @@ async def test_handle_message_inactive() -> None:
     sessions = SessionManager()
     sessions.get(1).active = False
     await handle_message(
-        message, sessions, AsyncMock(), AppConfig(telegram=TelegramConfig(token=VALID_TOKEN))
+        message,
+        sessions,
+        AsyncMock(),
+        AppConfig(telegram=TelegramConfig(token=VALID_TOKEN)),
     )
     message.answer.assert_not_called()
 
@@ -743,7 +750,9 @@ def test_format_tool_html() -> None:
 
 @pytest.mark.asyncio
 async def test_start_bot() -> None:
-    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN), gemini=GeminiConfig(work_dir="auto"))
+    config = AppConfig(
+        telegram=TelegramConfig(token=VALID_TOKEN), gemini=GeminiConfig(work_dir="auto")
+    )
     # start_bot uses asyncio.gather(polling_task, shutdown_requested.wait())
     # Pre-set the Event so .wait() returns immediately and the test doesn't hang.
     fast_event = asyncio.Event()

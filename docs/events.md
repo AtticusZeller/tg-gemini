@@ -42,4 +42,6 @@ The final event in a stream, summarizing the outcome and usage.
 
 ## Parsing Logic
 
-The `GeminiAgent.run_stream` method in `src/tg_gemini/gemini.py` reads the subprocess `stdout` line-by-line and attempts to parse each line as a JSON object matching one of the models above. Lines that are not valid JSON or do not match a known event type are logged but ignored.
+`GeminiSession._read_loop()` in `src/tg_gemini/gemini.py` reads the subprocess `stdout` line-by-line. Each line is parsed via `_parse_line()` which extracts JSON objects and feeds them into `_handle_event()` for type dispatch. `_handle_event()` maps the raw JSON event type to the corresponding typed `Event` model via `parse_event()` from `events.py`. Lines that are not valid JSON or do not match a known event type are logged but ignored.
+
+The `GeminiAgent.run_stream()` method wraps a `GeminiSession` and yields events with stop/interrupt support via an `asyncio.Event`.

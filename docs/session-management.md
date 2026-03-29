@@ -27,53 +27,45 @@ class PersistedSession:
     custom_names: dict[str, str] = field(default_factory=dict)  # User-given session names
 ```
 
-### 2.2 `UserSession` (in-memory, per-user)
+### 2.2 `Session` (in-memory, per-user)
 
-Defined in `src/tg_gemini/bot.py`:
+Defined in `src/tg_gemini/session.py`:
 
 ```python
 @dataclass
-class UserSession:
-    session_id: str | None = None     # Gemini session ID; None = new session on next message
-    model: str | None = None          # Per-user model override (None = use config default)
-    active: bool = True               # Whether the bot responds to this user
-    mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # Guards state mutations only
-    last_sessions: list[SessionInfo] = field(default_factory=list)    # Cached /list output
-    custom_names: dict[str, str] = field(default_factory=dict)        # User-given names for sessions
-    pending_name: str | None = None   # Name queued for the next session to be created
-    stop_event: asyncio.Event | None = None  # Stop signal for in-flight streams
+class Session:
+    id: str                                # UUID v4
+    user_key: str = ""                      # "telegram:{chat_id}:{user_id}"
+    agent_session_id: str = ""              # Gemini CLI session ID for --resume
+    name: str = ""                          # User-given name
+    history: list[HistoryEntry] = field(default_factory=list)
+    created_at: datetime = ...              # UTC timestamp
+    updated_at: datetime = ...              # Updated on unlock()
+    _busy: bool = False                     # Whether session is processing
+    _lock: asyncio.Lock = ...               # Per-session concurrency lock
 ```
 
-### 2.3 `SessionStore` (persistence layer)
+### 2.3 `SessionManager`
 
-Defined in `src/tg_gemini/sessions.py`. Async-safe JSON store backed by a file:
-
-```python
-class SessionStore:
-    def __init__(self, *, _path: Path | None = None, _lock: asyncio.Lock | None = None) -> None: ...
-    async def load(self) -> dict[int, PersistedSession]: ...
-    async def save(self, user_id: int, session: PersistedSession) -> None: ...
-    async def save_all(self, sessions: dict[int, PersistedSession]) -> None: ...
-```
-
-- All I/O runs on a thread pool via `asyncio.to_thread` — never blocks the event loop
-- Writes use **atomic rename** (temp file + `tmp.replace(path)`) — survives crashes
-- File location: `~/.config/tg-gemini/sessions.json`
-- Graceful degradation: corrupt or missing files return empty dict, never crash
-
-### 2.4 `SessionManager`
+Defined in `src/tg_gemini/session.py`. Manages multiple sessions per user:
 
 ```python
 class SessionManager:
-    def __init__(self, store: SessionStore | None = None) -> None: ...
-    @classmethod
-    async def create(cls, store: SessionStore) -> SessionManager: ...  # Loads persisted sessions
-    async def save(self, user_id: int) -> None: ...                     # Saves one user's state
-    async def shutdown(self) -> None: ...                                 # Saves all on exit
-    def get(self, user_id: int) -> UserSession: ...                      # Lazy creation
+    def __init__(self, store_path: Path | None = None) -> None: ...
+    def new_session(self, user_key: str, name: str = "") -> Session: ...
+    def get(self, user_key: str) -> Session | None: ...
+    def list_sessions(self, user_key: str) -> list[Session]: ...    # Sorted by updated_at desc
+    def switch_session(self, user_key: str, target: str) -> Session | None: ...
+    def delete_sessions(self, ids: list[str]) -> int: ...
+    def active_session_id(self, user_key: str) -> str: ...
 ```
 
-### 2.5 `SessionInfo` (returned from Gemini CLI)
+- Sessions are persisted to a JSON file via `_save()` / `_load()`
+- Atomic write (temp file + rename) — survives crashes
+- File location: `~/.tg-gemini/sessions.json` (configurable via `data_dir`)
+- Graceful degradation: corrupt or missing files return empty, never crash
+
+### 2.4 `SessionInfo` (returned from Gemini CLI)
 
 Defined in `src/tg_gemini/gemini.py`:
 
@@ -94,21 +86,16 @@ Fetched by `agent.list_sessions()`, parsed via regex from the plain-text output 
 
 ```
 User sends message
-    └─> handle_message (captures session_id=None, model=None BEFORE streaming)
-    └─> _process_stream(bot.py:635)
-            └─> agent.run_stream(prompt, session_id=None, ...)
-                    └─> gemini -p "prompt" --output-format stream-json [no -r flag]
-                            └─> Gemini CLI creates a NEW session internally
-                            └─> stdout: first line is an "init" event
-                                    {
-                                      "type": "init",
-                                      "session_id": "abc-123-...",
-                                      "model": "gemini-2.5-flash"
-                                    }
-            └─> _handle_event InitEvent (bot.py:587)
-                    └─> async with session.mutation_lock:  ← µs lock
-                            session.session_id = event.session_id   ← captured here
-    └─> await sessions.save(user_id)  ← persists to disk
+    └─> Engine.handle_message()
+    └─> Engine._process()
+            └─> SessionManager.get_or_create(session_key) → Session (agent_session_id="")
+            └─> Engine._run_gemini(session, ...)
+                    └─> GeminiSession.send(prompt) → gemini subprocess
+                    └─> _read_loop() → reads JSONL events
+                            └─> init event → Event(type=INIT, session_id="abc-123-...")
+                    └─> Engine processes INIT event:
+                            └─> session.agent_session_id = "abc-123-..."  ← captured for resume
+            └─> SessionManager._save()  ← persists to disk
 ```
 
 ### 3.2 Continuing a Session (after first message)
@@ -227,101 +214,127 @@ The `stop_event` is checked **inside** `agent.run_stream` — it sets `stop_evt`
 
 ### What is Persisted
 
-`PersistedSession` captures only the fields that need to survive a restart:
+`SessionManager` persists all sessions to `~/.tg-gemini/sessions.json`:
 
-- `session_id` — so old conversations continue after restart
-- `model` — per-user model preference
-- `custom_names` — user-given session names
+```json
+{
+  "version": 2,
+  "sessions": {
+    "uuid-v4": {
+      "id": "uuid-v4",
+      "user_key": "telegram:123:456",
+      "agent_session_id": "gemini-session-id",
+      "name": "My Session",
+      "history": [],
+      "created_at": "2026-03-29T10:00:00+00:00",
+      "updated_at": "2026-03-29T10:00:05+00:00"
+    }
+  },
+  "active_sessions": {"telegram:123:456": "uuid-v4"},
+  "session_counter": 1
+}
+```
 
 Fields **NOT persisted** (rebuilt on restart):
-- `last_sessions` — refetched via `gemini --list-sessions`
-- `pending_name` — cleared on restart (name queued for a session that didn't start)
-- `active` — always `True` on restart
+- `_busy` / `_lock` — runtime state only
 
 ### When Persistence Happens
 
 | Event | Action |
 |---|---|
-| Stream completes | `await sessions.save(user_id)` — persists captured `session_id` |
-| Command mutates session | `await sessions.save(user_id)` — persists immediately |
-| Bot shutdown | `await sessions.shutdown()` — saves all users atomically |
+| `new_session()` / `switch_session()` / `delete_session()` / `set_session_name()` | `SessionManager._save()` — persists immediately |
+| Stream completes | `SessionManager._save()` — persists captured `agent_session_id` |
 
 ### File Format
 
-`~/.config/tg-gemini/sessions.json`:
+`~/.tg-gemini/sessions.json` (configurable via `data_dir` in config):
 
 ```json
 {
-  "1": {
-    "session_id": "abc-123-...",
-    "model": "flash",
-    "custom_names": {"abc-123-...": "My Project"}
+  "version": 2,
+  "sessions": {
+    "uuid-v4": {
+      "id": "uuid-v4",
+      "user_key": "telegram:123:456",
+      "agent_session_id": "gemini-session-id",
+      "name": "My Session",
+      "history": [
+        {"role": "user", "content": "hello", "timestamp": "2026-03-29T10:00:00+00:00"},
+        {"role": "assistant", "content": "Hi!", "timestamp": "2026-03-29T10:00:05+00:00"}
+      ],
+      "created_at": "2026-03-29T10:00:00+00:00",
+      "updated_at": "2026-03-29T10:00:05+00:00"
+    }
   },
-  "42": {
-    "session_id": "xyz-789",
-    "model": "pro",
-    "custom_names": {}
-  }
+  "active_sessions": {"telegram:123:456": "uuid-v4"},
+  "session_counter": 1
 }
 ```
 
 ## 7. Command Reference
 
-| Command | Effect on `session_id` | Effect on other fields |
+| Command | Effect on Session | Effect on other fields |
 |---|---|---|
-| `/new [name]` | Sets `session_id = None` under `mutation_lock` | Sets `pending_name` |
-| `/resume <id\|index>` | Sets `session_id = target_id` under `mutation_lock` | Clears `pending_name` |
-| `/resume` (no args) | Sets `session_id = "latest"` | Clears `pending_name` |
-| `/delete <id\|index>` | Clears `session_id` if matches | Removes from `custom_names` |
-| `/name <name>` | None | Sets `custom_names[session_id]` |
-| `/model <name>` | None | Sets `session.model` |
-| Any other message | Uses captured `session_id` | — |
-
-All command handlers that mutate session state hold `mutation_lock` for only the few microseconds needed to update the fields, then release it.
+| `/new [name]` | `SessionManager.new_session()` — creates fresh session, makes active | Sets `name` |
+| `/switch <id\|index\|name>` | `SessionManager.switch_session()` — changes active session | — |
+| `/list [query]` | Displays sessions with inline keyboard (Switch + Delete buttons) | — |
+| `/delete` | Enter interactive delete mode with toggle selections | — |
+| `/delete_one <id>` | `SessionManager.delete_session()` — removes single session | — |
+| `/name <name>` | `SessionManager.set_session_name()` — renames current session | — |
+| `/model [name]` | Shows/switches model via inline keyboard | `agent.model` |
+| `/mode [mode]` | Shows/switches approval mode via inline keyboard | `agent.mode` |
+| `/current` | Shows active session info | — |
+| `/history` | Shows recent conversation history | — |
+| `/status` | Shows bot/session status | — |
+| `/stop` | Signals stop via `asyncio.Event` | Best-effort, no subprocess kill |
+| `/quiet` | Toggle quiet mode (suppress tool output) | Per-session `_InteractiveState` |
+| `/commands reload` | Reloads commands and skills, refreshes Telegram menu | — |
+| Any other message | Routes to `_process()` → `_run_gemini()` | — |
 
 ## 8. Message Flow (Full Pipeline)
 
 ```
 Telegram message
     │
-    ├─ SessionManager.get(user_id) → UserSession
-    │       └─ (creates UserSession if first time; session_id may be restored from disk)
+    ├─ TelegramPlatform._handle_update()
+    │       ├─ Filter old messages (>30s), check allow_from
+    │       ├─ Build Message with ReplyContext → Engine.handle_message()
     │
-    ├─ Capture state BEFORE streaming
-    │       session_id = session.session_id    ← stable snapshot
-    │       model = session.model              ← stable snapshot
+    ├─ Engine.handle_message()
+    │       ├─ Dedup check (MessageDedup)
+    │       ├─ Rate limit check (RateLimiter)
+    │       ├─ Slash command? → handle_command()
+    │       └─ Session busy? → enqueue (max 5)
     │
-    ├─ _process_stream (NO lock held during streaming)
-    │       ├─ message.answer("Thinking...")
-    │       ├─ agent.run_stream(prompt, session_id, model, stop_event)
-    │       │       ├─ Builds CLI args: gemini -p <prompt> -r <session_id> ...
-    │       │       ├─ asyncio.create_subprocess_exec → non-blocking
-    │       │       └─ Yields events parsed from NDJSON stdout
-    │       │
-    │       ├─ for event in stream: _handle_event(event, session, state, reply)
-    │       │       ├─ InitEvent  → async with mutation_lock: session.session_id = ...
-    │       │       ├─ MessageEvent → accumulate text, throttle-edit Telegram message
-    │       │       ├─ ToolUseEvent → send tool display message to Telegram
-    │       │       ├─ ToolResultEvent → edit tool message with ✅/❌
-    │       │       ├─ ErrorEvent → edit reply with error, set aborted=True
-    │       │       └─ ResultEvent → extract stats (tokens, duration)
-    │       │
-    │       └─ Final UI update
-    │               ├─ If tools used: delete "Thinking...", send final response as new message
-    │               └─ If no tools: edit "Thinking..." in place
-    │
-    └─ await sessions.save(user_id)  ← persist after stream completes
+    └─ Engine._process() → Engine._run_gemini()
+            ├─ SessionManager.get_or_create(session_key) → Session
+            ├─ Session.try_lock() → acquires asyncio.Lock
+            ├─ GeminiAgent.start_session(resume_id=session.agent_session_id)
+            │       └─ Returns GeminiSession
+            ├─ GeminiSession.send(prompt)
+            │       └─ asyncio.create_subprocess_exec("gemini", ...)
+            ├─ _read_loop() → reads JSONL → emits Events into asyncio.Queue
+            │
+            ├─ Engine consumes events:
+            │       ├─ INIT → store session.agent_session_id for resume
+            │       ├─ TEXT → StreamPreview.append_text()
+            │       ├─ TOOL_USE → StreamPreview.freeze() + platform.send(tool_msg)
+            │       ├─ TOOL_RESULT → platform.send(result_msg) (quiet mode skips)
+            │       ├─ ERROR → platform.send(error_msg)
+            │       └─ RESULT → StreamPreview.finish() → platform.reply()
+            │
+            ├─ Session.unlock() → updates timestamp
+            └─ SessionManager._save()  ← persists to disk
 ```
 
 ## 9. Shutdown Flow
 
 ```
 SIGTERM / SIGINT received
-    └─> _shutdown()
-            └─> await sessions.shutdown()
-                    └─> SessionStore.save_all({uid: PersistedSession(...) for uid, s in _sessions.items()})
-                            └─> Atomic write to ~/.config/tg-gemini/sessions.json
-            └─> await bot.session.close()
+    └─> asyncio.Event (shutdown signal)
+            └─> Engine stops processing
+            └─> SessionManager._save() persists all sessions to disk
+                    └─> Atomic write to ~/.tg-gemini/sessions.json
 ```
 
 All session state is persisted atomically before the process exits.
@@ -330,11 +343,11 @@ All session state is persisted atomically before the process exits.
 
 | File | Responsibility |
 |---|---|
-| `src/tg_gemini/sessions.py` | `PersistedSession`, `SessionStore` — async JSON persistence, atomic writes |
-| `src/tg_gemini/bot.py` | `UserSession`, `SessionManager`, all command handlers, `_process_stream`, event dispatch |
-| `src/tg_gemini/gemini.py` | Subprocess execution, CLI argument building, `list_sessions`, `delete_session` |
+| `src/tg_gemini/session.py` | `Session`, `SessionManager` — multi-session management, JSON persistence |
+| `src/tg_gemini/engine.py` | Message routing, command dispatch, `_run_gemini`, event processing, card UI |
+| `src/tg_gemini/gemini.py` | `GeminiSession` subprocess + JSONL parsing, `GeminiAgent` factory, `list_sessions`, `delete_session`, `run_stream` |
 | `src/tg_gemini/events.py` | Pydantic event models including `InitEvent` with `session_id` field |
-| `src/tg_gemini/config.py` | `GeminiConfig` with `model`, `approval_mode`, `working_dir` |
+| `src/tg_gemini/config.py` | `AppConfig` with `GeminiConfig` (`model`, `mode`, `work_dir`, `cmd`, `api_key`, `timeout_mins`) |
 
 ## 11. Limitations
 
@@ -342,9 +355,9 @@ All session state is persisted atomically before the process exits.
 
 A session is tied to a Telegram user ID. If the same user connects from multiple devices, they share the session — but there is no mechanism to resume a session from a different user account.
 
-### 11.2 `latest` String as Session ID
+### 11.2 Multi-Session Model
 
-When `/resume` is called with no argument, `session.session_id` is set to the string `"latest"`. This is a special value that Gemini CLI interprets as "use the most recent session". The `SessionInfo` objects fetched by `/list` contain real UUIDs, so `session.last_sessions` is used to resolve index arguments.
+The current architecture uses `SessionManager` from `session.py` which supports multiple named sessions per user. Sessions are identified by UUIDs and sorted by `updated_at`. The `/switch` command replaces the old `/resume` and accepts a 1-based index, ID prefix, or name substring to change the active session.
 
 ### 11.3 Graceful Degradation on Persistence Failure
 
