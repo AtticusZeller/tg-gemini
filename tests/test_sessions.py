@@ -23,9 +23,7 @@ class TestPersistedSession:
 
     def test_with_values(self) -> None:
         s = PersistedSession(
-            session_id="sess-abc",
-            model="flash",
-            custom_names={"sess-abc": "My Chat"},
+            session_id="sess-abc", model="flash", custom_names={"sess-abc": "My Chat"}
         )
         assert s.session_id == "sess-abc"
         assert s.model == "flash"
@@ -40,9 +38,7 @@ class TestPersistedSession:
     async def test_serialize_roundtrip(self, sessions_file: Path) -> None:
         """PersistedSession survives a save/load roundtrip through the store."""
         original = PersistedSession(
-            session_id="sess-xyz",
-            model="pro",
-            custom_names={"sess-xyz": "Project"},
+            session_id="sess-xyz", model="pro", custom_names={"sess-xyz": "Project"}
         )
         store = SessionStore(_path=sessions_file)
         await store.save_all({1: original})
@@ -62,10 +58,7 @@ class TestSessionStoreDeserialize:
     @pytest.mark.asyncio
     async def test_non_dict_data(self, sessions_file: Path) -> None:
         """When a user's data is not a dict, load() returns defaults for that user."""
-        sessions_file.write_text(
-            json.dumps({"1": "not a dict"}),
-            encoding="utf-8",
-        )
+        sessions_file.write_text(json.dumps({"1": "not a dict"}), encoding="utf-8")
         store = SessionStore(_path=sessions_file)
         result = await store.load()
         assert result[1] == PersistedSession()
@@ -84,8 +77,7 @@ class TestSessionStoreDeserialize:
     async def test_partial_fields(self, sessions_file: Path) -> None:
         """When a user's data has some fields, load() returns partial result."""
         sessions_file.write_text(
-            json.dumps({"1": {"session_id": "abc", "model": None}}),
-            encoding="utf-8",
+            json.dumps({"1": {"session_id": "abc", "model": None}}), encoding="utf-8"
         )
         store = SessionStore(_path=sessions_file)
         result = await store.load()
@@ -131,10 +123,16 @@ class TestSessionStoreLoad:
     @pytest.mark.asyncio
     async def test_valid_data(self, sessions_file: Path) -> None:
         sessions_file.write_text(
-            json.dumps({
-                "1": {"session_id": "sess-a", "model": "flash", "custom_names": {}},
-                "42": {"session_id": "sess-b", "model": "pro", "custom_names": {"sess-b": "Work"}},
-            }),
+            json.dumps(
+                {
+                    "1": {"session_id": "sess-a", "model": "flash", "custom_names": {}},
+                    "42": {
+                        "session_id": "sess-b",
+                        "model": "pro",
+                        "custom_names": {"sess-b": "Work"},
+                    },
+                }
+            ),
             encoding="utf-8",
         )
         store = SessionStore(_path=sessions_file)
@@ -162,11 +160,13 @@ class TestSessionStoreLoad:
     @pytest.mark.asyncio
     async def test_invalid_user_id_skipped(self, sessions_file: Path) -> None:
         sessions_file.write_text(
-            json.dumps({
-                "1": {"session_id": "a"},
-                "not-an-int": {"session_id": "b"},
-                "3.14": {"session_id": "c"},
-            }),
+            json.dumps(
+                {
+                    "1": {"session_id": "a"},
+                    "not-an-int": {"session_id": "b"},
+                    "3.14": {"session_id": "c"},
+                }
+            ),
             encoding="utf-8",
         )
         store = SessionStore(_path=sessions_file)
@@ -197,8 +197,7 @@ class TestSessionStoreSave:
     async def test_save_reads_existing(self, sessions_file: Path) -> None:
         # Pre-populate
         sessions_file.write_text(
-            json.dumps({"2": {"session_id": "existing"}}),
-            encoding="utf-8",
+            json.dumps({"2": {"session_id": "existing"}}), encoding="utf-8"
         )
         store = SessionStore(_path=sessions_file)
         await store.save(1, PersistedSession(session_id="new"))
@@ -239,7 +238,9 @@ class TestSessionStoreSaveAll:
 
     @pytest.mark.asyncio
     async def test_save_all_empty(self, sessions_file: Path) -> None:
-        sessions_file.write_text(json.dumps({"1": {"session_id": "old"}}), encoding="utf-8")
+        sessions_file.write_text(
+            json.dumps({"1": {"session_id": "old"}}), encoding="utf-8"
+        )
         store = SessionStore(_path=sessions_file)
         await store.save_all({})
         result = await store.load()

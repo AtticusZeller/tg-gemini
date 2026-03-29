@@ -51,7 +51,7 @@ class SessionStore:
 
         try:
             raw: dict = await asyncio.to_thread(self._read_json, self._path)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("sessions_load_failed", path=str(self._path))
             return {}
 
@@ -80,7 +80,7 @@ class SessionStore:
         async with self._lock:
             try:
                 raw: dict = await asyncio.to_thread(self._read_json, self._path)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 raw = {}
 
             if not isinstance(raw, dict):
@@ -114,9 +114,7 @@ class SessionStore:
         """
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
 
     @staticmethod

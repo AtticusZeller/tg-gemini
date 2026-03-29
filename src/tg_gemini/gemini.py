@@ -4,7 +4,10 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import tempfile
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +22,18 @@ from tg_gemini.models import (
     ModelOption,
 )
 
-__all__ = ["GeminiAgent", "GeminiSession"]
+__all__ = ["GeminiAgent", "GeminiSession", "SessionInfo"]
+
+
+@dataclass(frozen=True)
+class SessionInfo:
+    """Session info from gemini --list-sessions output."""
+
+    index: int
+    title: str
+    time: str
+    session_id: str
+
 
 _KNOWN_MODELS: list[ModelOption] = [
     ModelOption(name="gemini-3.1-pro-preview", desc="Gemini 3.1 Pro Preview"),
@@ -545,3 +559,94 @@ class GeminiAgent:
     def available_models(self) -> list[ModelOption]:
         """Return a hardcoded list of known Gemini models."""
         return list(_KNOWN_MODELS)
+
+    async def list_sessions(self) -> list[SessionInfo]:
+        """List sessions via `gemini --list-sessions` and parse output."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._cmd,
+                "--list-sessions",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self._work_dir,
+            )
+            stdout, _ = await proc.communicate()
+            lines = stdout.decode(errors="replace").strip().splitlines()
+        except Exception as e:
+            logger.warning(
+                "list_sessions: failed to run gemini --list-sessions", error=e
+            )
+            return []
+
+        sessions: list[SessionInfo] = []
+        for line in lines:
+            m = re.match(r"\s*(\d+)\.\s+(.+?)\s+\((\d+)\s+\)", line)
+            if not m:
+                continue
+            sessions.append(
+                SessionInfo(
+                    index=int(m.group(1)),
+                    title=m.group(2).strip(),
+                    time=m.group(3),
+                    session_id=m.group(3),
+                )
+            )
+        return sessions
+
+    async def delete_session(self, session_id: str) -> bool:
+        """Delete a session via `gemini --delete-session <id>`."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._cmd,
+                "--delete-session",
+                session_id,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self._work_dir,
+            )
+            await proc.communicate()
+            return proc.returncode == 0
+        except Exception as e:
+            logger.warning("delete_session: failed", session_id=session_id, error=e)
+            return False
+
+    async def run_stream(
+        self, prompt: str, session_id: str, model: str, stop_event: asyncio.Event
+    ) -> "AsyncGenerator[Event, None]":  # type: ignore[name-defined]
+        """Stream events from a Gemini session with stop/interrupt support.
+
+        Args:
+            prompt: The user prompt to send to Gemini.
+            session_id: Session ID to resume (empty for new session).
+            model: Model name override for this session.
+            stop_event: asyncio.Event to signal interruption.
+
+        Yields:
+            Event objects from the Gemini CLI stream.
+        """
+        session = GeminiSession(
+            cmd=self._cmd,
+            work_dir=self._work_dir,
+            model=model or self._model,
+            mode=self._mode,
+            api_key=self._api_key,
+            timeout_mins=self._timeout_mins,
+            resume_id=session_id,
+        )
+        try:
+            await session.send(prompt)
+            while True:
+                if stop_event.is_set():
+                    logger.debug("run_stream: interrupted by stop_event")
+                    break
+                try:
+                    event = await asyncio.wait_for(session.events.get(), timeout=0.5)
+                except TimeoutError:
+                    continue  # Re-check stop on next iteration
+                except asyncio.CancelledError:
+                    break
+                yield event
+                if event.type == EventType.RESULT:
+                    break
+        finally:
+            await session.close()

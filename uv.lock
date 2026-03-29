@@ -1027,7 +1027,7 @@ wheels = [
 
 [[package]]
 name = "tg-gemini"
-version = "0.0.10"
+version = "0.0.12"
 source = { editable = "." }
 dependencies = [
     { name = "loguru" },

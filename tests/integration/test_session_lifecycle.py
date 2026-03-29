@@ -13,7 +13,13 @@ import pytest
 from aiogram.types import Chat, Message, User
 
 from tests.integration.conftest import make_message_event, make_result
-from tg_gemini.bot import SessionManager, _process_stream, cmd_delete, cmd_new, cmd_resume
+from tg_gemini.bot import (
+    SessionManager,
+    _process_stream,
+    cmd_delete,
+    cmd_new,
+    cmd_resume,
+)
 from tg_gemini.events import InitEvent
 from tg_gemini.gemini import SessionInfo
 from tg_gemini.sessions import SessionStore
@@ -29,8 +35,15 @@ class TestNewSessionFlow:
         agent = MagicMock()
         captured: list[Any] = []
 
-        async def capture_stream(prompt: str, session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
-            captured.append({"prompt": prompt, "session_id": session_id, "model": model})
+        async def capture_stream(
+            prompt: str,
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
+            captured.append(
+                {"prompt": prompt, "session_id": session_id, "model": model}
+            )
             yield make_message_event("Hello!", delta=False)
             yield make_result()
 
@@ -59,7 +72,12 @@ class TestNewSessionFlow:
         sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
 
-        async def stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def stream(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             yield InitEvent(session_id="session-abc-123", model="flash")
             yield make_message_event("Hi!", delta=False)
             yield make_result()
@@ -82,7 +100,9 @@ class TestNewSessionFlow:
         assert session.session_id is None
 
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(msg, session, agent, session.session_id, session.model, sessions)
+            await _process_stream(
+                msg, session, agent, session.session_id, session.model, sessions
+            )
 
         assert session.session_id == "session-abc-123"
 
@@ -93,7 +113,12 @@ class TestNewSessionFlow:
         agent = MagicMock()
         captured_session_ids: list[str | None] = []
 
-        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def capture(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             captured_session_ids.append(session_id)
             if session_id is None:
                 yield InitEvent(session_id="sess-xyz", model="flash")
@@ -122,13 +147,26 @@ class TestNewSessionFlow:
 
         session = sessions.get(1)
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
-            await _process_stream(make_msg("first"), session, agent, session.session_id, session.model, sessions)
-            await _process_stream(make_msg("second"), session, agent, session.session_id, session.model, sessions)
+            await _process_stream(
+                make_msg("first"),
+                session,
+                agent,
+                session.session_id,
+                session.model,
+                sessions,
+            )
+            await _process_stream(
+                make_msg("second"),
+                session,
+                agent,
+                session.session_id,
+                session.model,
+                sessions,
+            )
 
-        assert captured_session_ids == [
-            None,
-            "sess-xyz",
-        ], "Second message must pass captured session_id"
+        assert captured_session_ids == [None, "sess-xyz"], (
+            "Second message must pass captured session_id"
+        )
 
 
 class TestNewCommandFlow:
@@ -169,7 +207,12 @@ class TestNewCommandFlow:
         captured: list[str | None] = []
         agent = MagicMock()
 
-        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def capture(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             captured.append(session_id)
             yield InitEvent(session_id="new-session", model="flash")
             yield make_message_event("ok", delta=False)
@@ -209,11 +252,18 @@ class TestResumeFlow:
     async def test_resume_with_id(self) -> None:
         """/resume <id> passes that session_id to gemini."""
         sessions = SessionManager(MagicMock(spec=SessionStore))
-        sessions.get(1).last_sessions = [SessionInfo(1, "Old chat", "1 day ago", "target-id")]
+        sessions.get(1).last_sessions = [
+            SessionInfo(1, "Old chat", "1 day ago", "target-id")
+        ]
         captured: list[str | None] = []
         agent = MagicMock()
 
-        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def capture(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             captured.append(session_id)
             yield make_message_event("ok", delta=False)
             yield make_result()
@@ -254,7 +304,12 @@ class TestResumeFlow:
         captured: list[str | None] = []
         agent = MagicMock()
 
-        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def capture(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             captured.append(session_id)
             yield make_message_event("ok", delta=False)
             yield make_result()
@@ -308,7 +363,12 @@ class TestNameFlow:
         captured: list[str | None] = []
         agent = MagicMock()
 
-        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def capture(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             captured.append(session_id)
             yield InitEvent(session_id="new-session", model="flash")
             yield make_message_event("hello", delta=False)
@@ -399,7 +459,12 @@ class TestModelOverride:
         captured: list[Any] = []
         agent = MagicMock()
 
-        async def capture(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def capture(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             captured.append(model)
             yield make_message_event("hi", delta=False)
             yield make_result()
@@ -437,7 +502,12 @@ class TestConcurrency:
         order: list[str] = []
         agent = MagicMock()
 
-        async def slow_stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def slow_stream(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             order.append(f"start:{prompt}")
             yield make_message_event("ok", delta=False)
             yield make_result()
@@ -463,8 +533,12 @@ class TestConcurrency:
         with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
             s = sessions.get(1)
             await asyncio.gather(
-                _process_stream(make_msg("msg1"), s, agent, s.session_id, s.model, sessions),
-                _process_stream(make_msg("msg2"), s, agent, s.session_id, s.model, sessions),
+                _process_stream(
+                    make_msg("msg1"), s, agent, s.session_id, s.model, sessions
+                ),
+                _process_stream(
+                    make_msg("msg2"), s, agent, s.session_id, s.model, sessions
+                ),
             )
 
         # Both streams start before any end (serialized by lock)

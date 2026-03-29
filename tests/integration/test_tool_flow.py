@@ -67,7 +67,12 @@ class TestToolMessageOrdering:
         sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
 
-        async def stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def stream(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             yield InitEvent(session_id="s1", model="flash")
             yield make_tool_use(tool_id="c1", tool_name="read_file")
             yield make_tool_result(tool_id="c1", status="success", output="content")
@@ -94,7 +99,12 @@ class TestToolMessageOrdering:
         sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
 
-        async def stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def stream(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             yield InitEvent(session_id="s1", model="flash")
             yield make_message_event("Hello!", delta=False)
             yield make_result()
@@ -156,7 +166,10 @@ class TestToolMessageOrdering:
 
         # Failure: icon should be swapped to ❌
         await _handle_event(
-            make_tool_result(tool_id="c1", status="error", output=None), session, state, reply
+            make_tool_result(tool_id="c1", status="error", output=None),
+            session,
+            state,
+            reply,
         )
         tool_msg.edit_text.assert_called_once()
         edited = tool_msg.edit_text.call_args[0][0]
@@ -172,7 +185,12 @@ class TestMultipleToolCalls:
         sessions = SessionManager(MagicMock(spec=SessionStore))
         agent = MagicMock()
 
-        async def stream(prompt: str = "", session_id: str | None = None, model: str | None = None, **_: Any) -> Any:
+        async def stream(
+            prompt: str = "",
+            session_id: str | None = None,
+            model: str | None = None,
+            **_: Any,
+        ) -> Any:
             yield InitEvent(session_id="s1", model="flash")
             yield make_tool_use(tool_id="c1", tool_name="read_file")
             yield make_tool_result(tool_id="c1", status="success", output="content1")

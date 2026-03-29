@@ -82,7 +82,9 @@ class ResultEvent(BaseEvent):
     stats: StreamStats | None = None
 
 
-GeminiEvent = InitEvent | MessageEvent | ToolUseEvent | ToolResultEvent | ErrorEvent | ResultEvent
+GeminiEvent = (
+    InitEvent | MessageEvent | ToolUseEvent | ToolResultEvent | ErrorEvent | ResultEvent
+)
 
 
 def parse_event(data: dict[str, Any]) -> GeminiEvent:

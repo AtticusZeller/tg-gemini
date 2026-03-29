@@ -18,7 +18,10 @@
       "Bash(uv run:*)",
       "Bash(bash dev.sh check)",
       "Bash(bash dev.sh lint && bash dev.sh test)",
-      "Bash(git merge:*)"
+      "Bash(git merge:*)",
+      "Bash(git stash:*)",
+      "Bash(git commit:*)",
+      "Bash(git worktree:*)"
     ]
   }
 }

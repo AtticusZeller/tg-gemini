@@ -354,6 +354,42 @@ def split_message(text: str, max_len: int = 4096) -> list[str]:
         if open_fence:
             limit -= len(closing_fence)
 
+        # Check if this single line exceeds the limit
+        if line_len > limit:
+            # Flush current chunk first if it has content
+            if current:
+                chunk = "\n".join(current)
+                if open_fence:
+                    chunk += closing_fence
+                chunks.append(chunk)
+                current = []
+                current_len = 0
+                if open_fence:
+                    current.append(open_fence)
+                    current_len = len(open_fence) + 1
+            # Split the long line into smaller pieces
+            while line:
+                remaining = limit - current_len
+                if remaining <= 0:
+                    # Flush and start new chunk
+                    chunk = "\n".join(current)
+                    if open_fence:
+                        chunk += closing_fence
+                    chunks.append(chunk)
+                    current = []
+                    current_len = 0
+                    if open_fence:
+                        current.append(open_fence)
+                        current_len = len(open_fence) + 1
+                    remaining = limit - current_len
+                take = min(len(line), remaining - 1)  # -1 for newline
+                if take <= 0:
+                    take = min(len(line), limit - 1)
+                current.append(line[:take])
+                current_len += take + 1
+                line = line[take:]
+            continue
+
         if current_len + line_len > limit and current:
             chunk = "\n".join(current)
             if open_fence:

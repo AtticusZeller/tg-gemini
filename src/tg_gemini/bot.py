@@ -30,7 +30,7 @@ from tg_gemini.events import (
     ToolUseEvent,
 )
 from tg_gemini.gemini import GeminiAgent, SessionInfo
-from tg_gemini.markdown import md_to_telegram_html, split_message_code_fence_aware
+from tg_gemini.markdown import markdown_to_html, split_message
 from tg_gemini.sessions import PersistedSession, SessionStore
 
 logger = structlog.get_logger()
@@ -110,14 +110,19 @@ class SessionManager:
             return
         all_sessions = {
             uid: PersistedSession(
-                session_id=s.session_id,
-                model=s.model,
-                custom_names=s.custom_names,
+                session_id=s.session_id, model=s.model, custom_names=s.custom_names
             )
             for uid, s in self._sessions.items()
         }
         await self._store.save_all(all_sessions)
         logger.info("sessions_persisted_on_shutdown", count=len(all_sessions))
+
+
+def _parse_allowed_ids(allow_from: str) -> list[int]:
+    """Parse allow_from string (e.g., '*' or '123,456') into list of allowed user IDs."""
+    if allow_from == "*":
+        return []
+    return [int(x.strip()) for x in allow_from.split(",") if x.strip().isdigit()]
 
 
 def _is_authorized(user_id: int, allowed_ids: list[int]) -> bool:
@@ -155,21 +160,23 @@ def _build_session_keyboard(
 
         if s.session_id == active_id:
             # Active session: Resume becomes a non-clickable "Current" label
-            resume_btn = InlineKeyboardButton(text="Current", callback_data="noop:current")
+            resume_btn = InlineKeyboardButton(
+                text="Current", callback_data="noop:current"
+            )
         else:
             resume_btn = InlineKeyboardButton(
-                text="Resume",
-                callback_data=f"r:{s.session_id}",
+                text="Resume", callback_data=f"r:{s.session_id}"
             )
 
         delete_btn = InlineKeyboardButton(
-            text="Delete",
-            callback_data=f"d:{s.session_id}",
+            text="Delete", callback_data=f"d:{s.session_id}"
         )
 
         rows.append(
             [
-                InlineKeyboardButton(text=f"📄 {display}{time_str}", callback_data="noop:info"),
+                InlineKeyboardButton(
+                    text=f"📄 {display}{time_str}", callback_data="noop:info"
+                ),
                 resume_btn,
                 delete_btn,
             ]
@@ -203,12 +210,13 @@ async def callback_model(query: CallbackQuery, sessions: SessionManager) -> None
         session.model = model_name
 
     await sessions.save(query.from_user.id)
-    logger.info("model_selected_via_keyboard", user_id=query.from_user.id, model=model_name)
+    logger.info(
+        "model_selected_via_keyboard", user_id=query.from_user.id, model=model_name
+    )
 
     with contextlib.suppress(Exception):
         await query.message.edit_text(
-            f"✅ Model set to: <b>{model_name}</b>",
-            parse_mode="HTML",
+            f"✅ Model set to: <b>{model_name}</b>", parse_mode="HTML"
         )
     await query.answer()
 
@@ -226,10 +234,16 @@ async def callback_resume(query: CallbackQuery, sessions: SessionManager) -> Non
         session.session_id = session_id
 
     await sessions.save(query.from_user.id)
-    logger.info("session_resumed_via_keyboard", user_id=query.from_user.id, session_id=session_id)
+    logger.info(
+        "session_resumed_via_keyboard",
+        user_id=query.from_user.id,
+        session_id=session_id,
+    )
 
     with contextlib.suppress(Exception):
-        await query.message.edit_text(f"✅ Resuming session: <code>{session_id}</code>", parse_mode="HTML")
+        await query.message.edit_text(
+            f"✅ Resuming session: <code>{session_id}</code>", parse_mode="HTML"
+        )
     await query.answer()
 
 
@@ -251,9 +265,15 @@ async def callback_delete(
                 session.session_id = None
             session.custom_names.pop(target_id, None)
         await sessions.save(query.from_user.id)
-        logger.info("session_deleted_via_keyboard", user_id=query.from_user.id, session_id=target_id)
+        logger.info(
+            "session_deleted_via_keyboard",
+            user_id=query.from_user.id,
+            session_id=target_id,
+        )
         with contextlib.suppress(Exception):
-            await query.message.edit_text(f"🗑 Deleted session: <code>{target_id}</code>", parse_mode="HTML")
+            await query.message.edit_text(
+                f"🗑 Deleted session: <code>{target_id}</code>", parse_mode="HTML"
+            )
     else:
         with contextlib.suppress(Exception):
             await query.message.edit_text("❌ Failed to delete session.")
@@ -308,7 +328,9 @@ async def cmd_start(message: Message, sessions: SessionManager) -> None:
 
 
 @router.message(Command("new"))
-async def cmd_new(message: Message, command: CommandObject, sessions: SessionManager) -> None:
+async def cmd_new(
+    message: Message, command: CommandObject, sessions: SessionManager
+) -> None:
     if not message.from_user:
         return
     logger.info("command_new", user_id=message.from_user.id, args=command.args)
@@ -339,7 +361,9 @@ async def _format_session_list(
 
 
 @router.message(Command("list"))
-async def cmd_list(message: Message, sessions: SessionManager, agent: GeminiAgent) -> None:
+async def cmd_list(
+    message: Message, sessions: SessionManager, agent: GeminiAgent
+) -> None:
     if not message.from_user:
         return
     logger.info("command_list", user_id=message.from_user.id)
@@ -354,10 +378,7 @@ async def cmd_list(message: Message, sessions: SessionManager, agent: GeminiAgen
         await message.answer("No sessions found.")
         return
 
-    await message.answer(
-        "Your sessions — tap Resume or Delete:",
-        reply_markup=keyboard,
-    )
+    await message.answer("Your sessions — tap Resume or Delete:", reply_markup=keyboard)
 
 
 def _resolve_id(arg: str, last_sessions: list[SessionInfo]) -> str:
@@ -370,7 +391,9 @@ def _resolve_id(arg: str, last_sessions: list[SessionInfo]) -> str:
 
 
 @router.message(Command("name"))
-async def cmd_name(message: Message, command: CommandObject, sessions: SessionManager) -> None:
+async def cmd_name(
+    message: Message, command: CommandObject, sessions: SessionManager
+) -> None:
     if not message.from_user:
         return
     logger.info("command_name", user_id=message.from_user.id, args=command.args)
@@ -388,7 +411,9 @@ async def cmd_name(message: Message, command: CommandObject, sessions: SessionMa
 
 
 @router.message(Command("resume"))
-async def cmd_resume(message: Message, command: CommandObject, sessions: SessionManager) -> None:
+async def cmd_resume(
+    message: Message, command: CommandObject, sessions: SessionManager
+) -> None:
     if not message.from_user:
         return
     logger.info("command_resume", user_id=message.from_user.id, args=command.args)
@@ -398,7 +423,9 @@ async def cmd_resume(message: Message, command: CommandObject, sessions: Session
         async with session.mutation_lock:
             session.session_id = target_id
         await sessions.save(message.from_user.id)
-        await message.answer(f"Resuming session: <code>{target_id}</code>", parse_mode="HTML")
+        await message.answer(
+            f"Resuming session: <code>{target_id}</code>", parse_mode="HTML"
+        )
     else:
         async with session.mutation_lock:
             session.session_id = "latest"
@@ -408,7 +435,10 @@ async def cmd_resume(message: Message, command: CommandObject, sessions: Session
 
 @router.message(Command("delete"))
 async def cmd_delete(
-    message: Message, command: CommandObject, sessions: SessionManager, agent: GeminiAgent
+    message: Message,
+    command: CommandObject,
+    sessions: SessionManager,
+    agent: GeminiAgent,
 ) -> None:
     if not message.from_user:
         return
@@ -427,21 +457,22 @@ async def cmd_delete(
                 session.session_id = None
             session.custom_names.pop(target_id, None)
         await sessions.save(message.from_user.id)
-        await message.answer(f"Deleted session: <code>{target_id}</code>", parse_mode="HTML")
+        await message.answer(
+            f"Deleted session: <code>{target_id}</code>", parse_mode="HTML"
+        )
     else:
         await message.answer("Failed to delete session.")
 
 
 @router.message(Command("model"))
-async def cmd_model(message: Message, command: CommandObject, sessions: SessionManager) -> None:
+async def cmd_model(
+    message: Message, command: CommandObject, sessions: SessionManager
+) -> None:
     if not message.from_user:
         return
     logger.info("command_model", user_id=message.from_user.id, args=command.args)
     if not command.args:
-        await message.answer(
-            "Select a model:",
-            reply_markup=_build_model_keyboard(),
-        )
+        await message.answer("Select a model:", reply_markup=_build_model_keyboard())
         return
     session = sessions.get(message.from_user.id)
     async with session.mutation_lock:
@@ -451,7 +482,9 @@ async def cmd_model(message: Message, command: CommandObject, sessions: SessionM
 
 
 @router.message(Command("status"))
-async def cmd_status(message: Message, sessions: SessionManager, config: AppConfig) -> None:
+async def cmd_status(
+    message: Message, sessions: SessionManager, config: AppConfig
+) -> None:
     if not message.from_user:
         return
     logger.info("command_status", user_id=message.from_user.id)
@@ -465,7 +498,9 @@ async def cmd_status(message: Message, sessions: SessionManager, config: AppConf
 
 
 @router.message(Command("current"))
-async def cmd_current(message: Message, sessions: SessionManager, config: AppConfig) -> None:
+async def cmd_current(
+    message: Message, sessions: SessionManager, config: AppConfig
+) -> None:
     if not message.from_user:
         return
     logger.info("command_current", user_id=message.from_user.id)
@@ -569,7 +604,7 @@ async def _throttle_edit(
     now = time.monotonic()
     if (
         now - last_update_time >= UPDATE_INTERVAL
-        and len(accumulated) - last_update_len >= UPDATE_CHAR_THRESHOLD
+        or len(accumulated) - last_update_len >= UPDATE_CHAR_THRESHOLD
     ):
         await _edit_reply(reply, accumulated)
         return now, len(accumulated)
@@ -602,16 +637,19 @@ async def _handle_event(
         if reply.chat and reply.message_id:
             with contextlib.suppress(Exception):
                 await reply.edit_text(
-                    "Thinking…",
-                    reply_markup=_build_stop_button(reply.message_id),
+                    "Thinking…", reply_markup=_build_stop_button(reply.message_id)
                 )
     elif isinstance(event, MessageEvent) and event.role == "assistant":
-        state.accumulated = (state.accumulated + event.content) if event.delta else event.content
+        state.accumulated = (
+            (state.accumulated + event.content) if event.delta else event.content
+        )
         state.last_update_time, state.last_update_len = await _throttle_edit(
             reply, state.accumulated, state.last_update_time, state.last_update_len
         )
     elif isinstance(event, ToolUseEvent):
-        logger.debug("stream_tool_use", tool_name=event.tool_name, tool_id=event.tool_id)
+        logger.debug(
+            "stream_tool_use", tool_name=event.tool_name, tool_id=event.tool_id
+        )
         tool_html = _format_tool_html(event)
         tool_msg = await reply.answer(tool_html, parse_mode="HTML")
         state.tool_messages[event.tool_id] = tool_msg
@@ -649,7 +687,9 @@ async def _process_stream(
     if not message.bot:
         return "", []
 
-    logger.info("stream_started", user_id=message.from_user.id if message.from_user else None)
+    logger.info(
+        "stream_started", user_id=message.from_user.id if message.from_user else None
+    )
     reply = await message.answer("Thinking…")
     state = _StreamState(last_update_time=time.monotonic())
 
@@ -677,7 +717,9 @@ async def _process_stream(
             # so it appears AFTER tool messages in correct order
             with contextlib.suppress(Exception):
                 await reply.delete()
-            logger.debug("stream_ending_with_tools", num_tool_msgs=len(state.tool_messages))
+            logger.debug(
+                "stream_ending_with_tools", num_tool_msgs=len(state.tool_messages)
+            )
             await _send_new(reply, state.accumulated)
         else:
             # No tools: edit "Thinking..." in place (clean Q&A flow)
@@ -700,7 +742,7 @@ async def handle_message(
 ) -> None:
     if not message.from_user or not message.text:
         return
-    if not _is_authorized(message.from_user.id, config.telegram.allowed_user_ids):
+    if not _is_authorized(message.from_user.id, _parse_allowed_ids(config.telegram.allow_from)):
         return
 
     session = sessions.get(message.from_user.id)
@@ -721,8 +763,8 @@ async def handle_message(
 
 async def _edit_reply(reply: Message, accumulated: str) -> None:
     """Edit the reply message with current accumulated text (streaming preview)."""
-    html = md_to_telegram_html(accumulated)
-    chunks = split_message_code_fence_aware(html, max_len=TELEGRAM_MAX_LENGTH)
+    html = markdown_to_html(accumulated)
+    chunks = split_message(html, max_len=TELEGRAM_MAX_LENGTH)
     if chunks:
         with contextlib.suppress(Exception):
             await reply.edit_text(chunks[0], parse_mode="HTML")
@@ -730,8 +772,8 @@ async def _edit_reply(reply: Message, accumulated: str) -> None:
 
 async def _send_final(reply: Message, accumulated: str) -> None:
     """Edit the reply with final response, splitting into extra messages if needed."""
-    html = md_to_telegram_html(accumulated)
-    chunks = split_message_code_fence_aware(html, max_len=TELEGRAM_MAX_LENGTH)
+    html = markdown_to_html(accumulated)
+    chunks = split_message(html, max_len=TELEGRAM_MAX_LENGTH)
 
     if not chunks:
         return
@@ -747,8 +789,8 @@ async def _send_final(reply: Message, accumulated: str) -> None:
 
 async def _send_new(reply: Message, accumulated: str) -> None:
     """Send the final response as new message(s) after tool messages."""
-    html = md_to_telegram_html(accumulated)
-    chunks = split_message_code_fence_aware(html, max_len=TELEGRAM_MAX_LENGTH)
+    html = markdown_to_html(accumulated)
+    chunks = split_message(html, max_len=TELEGRAM_MAX_LENGTH)
 
     for chunk in chunks:
         with contextlib.suppress(Exception):
@@ -756,7 +798,7 @@ async def _send_new(reply: Message, accumulated: str) -> None:
 
 
 async def start_bot(config: AppConfig) -> None:
-    bot = Bot(token=config.telegram.bot_token)
+    bot = Bot(token=config.telegram.token)
 
     commands = [
         BotCommand(command="start", description="Welcome and help"),

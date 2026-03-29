@@ -28,7 +28,7 @@ from tg_gemini.events import (
 _MIN_SESSION_ID_LENGTH = 20
 
 # Test file paths
-_TEST_WRITE_FILE_PATH = "/tmp/output.json"  # noqa: S108
+_TEST_WRITE_FILE_PATH = "/tmp/output.json"
 
 # Nested parameter test values
 _NESTED_DEEP_VALUE = 42
@@ -231,7 +231,10 @@ class TestParseToolUseEvent:
             "timestamp": "2026-03-15T10:00:00Z",
             "tool_name": "write_file",
             "tool_id": "tool-write-789",
-            "parameters": {"path": _TEST_WRITE_FILE_PATH, "content": '{"key": "value"}'},
+            "parameters": {
+                "path": _TEST_WRITE_FILE_PATH,
+                "content": '{"key": "value"}',
+            },
         }
         event = parse_event(data)
         assert isinstance(event, ToolUseEvent)
@@ -257,7 +260,11 @@ class TestParseToolUseEvent:
             "timestamp": "2026-03-15T10:00:00Z",
             "tool_name": "multi_tool",
             "tool_id": "tool-complex",
-            "parameters": {"nested": {"deep": {"value": 42}}, "list": [1, 2, 3], "flag": True},
+            "parameters": {
+                "nested": {"deep": {"value": 42}},
+                "list": [1, 2, 3],
+                "flag": True,
+            },
         }
         event = parse_event(data)
         assert isinstance(event, ToolUseEvent)
@@ -422,7 +429,11 @@ class TestParseResultEvent:
 
     def test_parse_result_success_no_stats(self) -> None:
         """Result may omit stats field."""
-        data = {"type": "result", "timestamp": "2026-03-15T10:00:00Z", "status": "success"}
+        data = {
+            "type": "result",
+            "timestamp": "2026-03-15T10:00:00Z",
+            "status": "success",
+        }
         event = parse_event(data)
         assert isinstance(event, ResultEvent)
         assert event.status == "success"

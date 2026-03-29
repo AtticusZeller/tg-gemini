@@ -51,7 +51,7 @@ from tg_gemini.events import (
 )
 from tg_gemini.gemini import SessionInfo
 
-VALID_TOKEN = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"  # noqa: S105
+VALID_TOKEN = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 
 
 @pytest.mark.asyncio
@@ -139,7 +139,7 @@ async def test_cmd_current() -> None:
     message.from_user = User(id=1, is_bot=False, first_name="Test")
     message.answer = AsyncMock()
     sessions = SessionManager()
-    config = AppConfig(TelegramConfig(VALID_TOKEN), GeminiConfig("auto"))
+    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN), gemini=GeminiConfig(work_dir="auto"))
     await cmd_current(message, sessions, config)
     message.answer.assert_called_once()
     assert "Current Model:" in message.answer.call_args[0][0]
@@ -274,7 +274,7 @@ async def test_cmd_model_with_args() -> None:
     message.from_user = User(id=1, is_bot=False, first_name="Test")
     message.answer = AsyncMock()
     sessions = SessionManager()
-    config = AppConfig(TelegramConfig(VALID_TOKEN))
+    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN))
 
     command = MagicMock()
     command.args = "pro"
@@ -341,7 +341,7 @@ async def test_cmd_current_with_name() -> None:
     sessions = SessionManager()
     sessions.get(1).session_id = "id-1"
     sessions.get(1).custom_names = {"id-1": "My Session"}
-    config = AppConfig(TelegramConfig(VALID_TOKEN), GeminiConfig("auto"))
+    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN), gemini=GeminiConfig(work_dir="auto"))
     await cmd_current(message, sessions, config)
     assert "Current Session:" in message.answer.call_args[0][0]
 
@@ -390,7 +390,7 @@ async def test_cmd_status() -> None:
     message.from_user = User(id=1, is_bot=False, first_name="Test")
     message.answer = AsyncMock()
     sessions = SessionManager()
-    config = AppConfig(TelegramConfig(VALID_TOKEN))
+    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN))
     await cmd_status(message, sessions, config)
     message.answer.assert_called_once()
 
@@ -416,7 +416,7 @@ async def test_handle_message_success() -> None:
 
     agent.run_stream = mock_stream
 
-    config = AppConfig(TelegramConfig(VALID_TOKEN))
+    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN))
     with patch("tg_gemini.bot.ChatActionSender.typing", return_value=AsyncMock()):
         await handle_message(message, sessions, agent, config)
 
@@ -428,7 +428,7 @@ async def test_handle_message_unauthorized() -> None:
     message = MagicMock(spec=Message)
     message.from_user = User(id=2, is_bot=False, first_name="Other")
     message.text = "hello"
-    config = AppConfig(TelegramConfig(VALID_TOKEN, allowed_user_ids=[1]))
+    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN, allow_from="1"))
     await handle_message(message, SessionManager(), AsyncMock(), config)
     message.answer.assert_not_called()
 
@@ -454,7 +454,9 @@ async def test_handle_message_inactive() -> None:
     message.text = "hi"
     sessions = SessionManager()
     sessions.get(1).active = False
-    await handle_message(message, sessions, AsyncMock(), AppConfig(TelegramConfig(VALID_TOKEN)))
+    await handle_message(
+        message, sessions, AsyncMock(), AppConfig(telegram=TelegramConfig(token=VALID_TOKEN))
+    )
     message.answer.assert_not_called()
 
 
@@ -474,7 +476,9 @@ async def test_process_stream_with_tools() -> None:
     agent = AsyncMock()
 
     async def mock_stream(*args: Any, **kwargs: Any) -> Any:
-        yield ToolUseEvent(tool_id="c1", tool_name="read_file", parameters={"file_path": "f"})
+        yield ToolUseEvent(
+            tool_id="c1", tool_name="read_file", parameters={"file_path": "f"}
+        )
         yield ToolResultEvent(tool_id="c1", status="success", output="content")
         yield MessageEvent(role="assistant", content="done", delta=False)
         yield ResultEvent(status="success")
@@ -597,7 +601,10 @@ async def test_handle_event_message_delta() -> None:
     reply = MagicMock(spec=Message)
     reply.edit_text = AsyncMock()
     await _handle_event(
-        MessageEvent(role="assistant", content="World", delta=True), UserSession(), state, reply
+        MessageEvent(role="assistant", content="World", delta=True),
+        UserSession(),
+        state,
+        reply,
     )
     assert state.accumulated == "Hello World"
 
@@ -606,9 +613,13 @@ async def test_handle_event_message_delta() -> None:
 async def test_handle_event_tool_result_fail() -> None:
     tool_msg = MagicMock(spec=Message)
     tool_msg.edit_text = AsyncMock()
-    state = _StreamState(tool_messages={"c1": tool_msg}, tool_html={"c1": "🔧 <b>tool</b>"})
+    state = _StreamState(
+        tool_messages={"c1": tool_msg}, tool_html={"c1": "🔧 <b>tool</b>"}
+    )
     await _handle_event(
-        ToolResultEvent(tool_id="c1", status="error", error={"type": "Error", "message": "e"}),
+        ToolResultEvent(
+            tool_id="c1", status="error", error={"type": "Error", "message": "e"}
+        ),
         UserSession(),
         state,
         MagicMock(),
@@ -686,7 +697,9 @@ def test_format_tool_html() -> None:
     assert "+ n" in res
 
     ev = ToolUseEvent(
-        tool_id="c3", tool_name="write_file", parameters={"file_path": "f", "content": "c"}
+        tool_id="c3",
+        tool_name="write_file",
+        parameters={"file_path": "f", "content": "c"},
     )
     assert "f" in _format_tool_html(ev)
 
@@ -698,16 +711,22 @@ def test_format_tool_html() -> None:
     assert "L1-L10" in _format_tool_html(ev)
 
     # Search
-    ev = ToolUseEvent(tool_id="c5", tool_name="list_directory", parameters={"dir_path": "d"})
+    ev = ToolUseEvent(
+        tool_id="c5", tool_name="list_directory", parameters={"dir_path": "d"}
+    )
     assert "list_directory" in _format_tool_html(ev)
 
     ev = ToolUseEvent(tool_id="c6", tool_name="glob", parameters={"pattern": "p"})
     assert "glob" in _format_tool_html(ev)
 
-    ev = ToolUseEvent(tool_id="c7", tool_name="grep_search", parameters={"pattern": "p"})
+    ev = ToolUseEvent(
+        tool_id="c7", tool_name="grep_search", parameters={"pattern": "p"}
+    )
     assert "grep_search" in _format_tool_html(ev)
 
-    ev = ToolUseEvent(tool_id="c8", tool_name="google_web_search", parameters={"query": "q"})
+    ev = ToolUseEvent(
+        tool_id="c8", tool_name="google_web_search", parameters={"query": "q"}
+    )
     assert "google_web_search" in _format_tool_html(ev)
 
     ev = ToolUseEvent(tool_id="c9", tool_name="web_fetch", parameters={"prompt": "p"})
@@ -724,14 +743,16 @@ def test_format_tool_html() -> None:
 
 @pytest.mark.asyncio
 async def test_start_bot() -> None:
-    config = AppConfig(TelegramConfig(VALID_TOKEN), GeminiConfig("auto"))
+    config = AppConfig(telegram=TelegramConfig(token=VALID_TOKEN), gemini=GeminiConfig(work_dir="auto"))
     # start_bot uses asyncio.gather(polling_task, shutdown_requested.wait())
     # Pre-set the Event so .wait() returns immediately and the test doesn't hang.
     fast_event = asyncio.Event()
     fast_event.set()
 
     with (
-        patch("tg_gemini.bot.Dispatcher.start_polling", new_callable=AsyncMock) as mock_poll,
+        patch(
+            "tg_gemini.bot.Dispatcher.start_polling", new_callable=AsyncMock
+        ) as mock_poll,
         patch("tg_gemini.bot.Bot.set_my_commands", new_callable=AsyncMock) as mock_cmd,
         patch("tg_gemini.bot.asyncio.Event", return_value=fast_event),
     ):

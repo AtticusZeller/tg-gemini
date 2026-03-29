@@ -1515,7 +1515,7 @@ async def test_build_list_card_has_delete_buttons() -> None:
     """Each session row in /list has a Delete button alongside Switch."""
     engine, _, _ = _make_engine()
     key = "telegram:1:2"
-    s1 = engine._sessions.new_session(key, name="Session A")
+    engine._sessions.new_session(key, name="Session A")
     engine._sessions.new_session(key, name="Session B")  # active
 
     card = engine._build_list_card(key, "")
@@ -1530,16 +1530,20 @@ async def test_build_list_card_each_row_has_switch_and_delete() -> None:
     """Non-active session rows have both Switch and Delete buttons."""
     engine, _, _ = _make_engine()
     key = "telegram:1:2"
-    s1 = engine._sessions.new_session(key, name="Alpha")
+    engine._sessions.new_session(key, name="Alpha")
     engine._sessions.new_session(key, name="Beta")  # active (most recent)
 
     card = engine._build_list_card(key, "")
     rows = card.collect_buttons()
 
-    # row[0]: Beta (active) — Delete only
-    # row[1]: Alpha (non-active) — Switch + Delete
-    active_row = rows[0]
-    inactive_row = rows[1]
+    active_sid = engine._sessions.active_session_id(key)
+    # Identify rows by callback data content (order depends on updated_at resolution)
+    active_row = next(
+        r for r in rows if any(active_sid in btn.callback_data for btn in r)
+    )
+    inactive_row = next(
+        r for r in rows if not any(active_sid in btn.callback_data for btn in r)
+    )
 
     # Active: Delete only
     assert len(active_row) == 1
