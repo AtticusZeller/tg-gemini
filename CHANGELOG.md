@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.14 - 2026-03-29
+
+### 🐛 Bug Fixes
+
+- *(types)* Resolve type check errors in bot, gemini, and markdown modules
+
+### ⚙️ Miscellaneous Tasks
+
+- *(dependencies)* Add structlog version 25.5.0 to project dependencies
+
 ## 0.0.13 - 2026-03-29
 
 ### 🚀 Features

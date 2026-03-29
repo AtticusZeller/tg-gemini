@@ -613,13 +613,13 @@ class GeminiAgent:
             return False
 
     async def run_stream(
-        self, prompt: str, session_id: str, model: str, stop_event: asyncio.Event
+        self, prompt: str, session_id: str | None, model: str | None, stop_event: asyncio.Event
     ) -> "AsyncGenerator[Event, None]":
         """Stream events from a Gemini session with stop/interrupt support.
 
         Args:
             prompt: The user prompt to send to Gemini.
-            session_id: Session ID to resume (empty for new session).
+            session_id: Session ID to resume (None or "" for new session).
             model: Model name override for this session.
             stop_event: asyncio.Event to signal interruption.
 
@@ -633,7 +633,7 @@ class GeminiAgent:
             mode=self._mode,
             api_key=self._api_key,
             timeout_mins=self._timeout_mins,
-            resume_id=session_id,
+            resume_id=session_id or "",
         )
         try:
             await session.send(prompt)

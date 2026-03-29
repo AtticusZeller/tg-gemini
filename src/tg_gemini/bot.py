@@ -706,7 +706,7 @@ async def _process_stream(
 
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         async for event in agent.run_stream(
-            message.text or "", session_id or "", model or "", stop_event=stop_evt
+            message.text or "", session_id, model, stop_event=stop_evt
         ):
             await _handle_event(event, session, state, reply)
             if state.aborted:
