@@ -1,94 +1,109 @@
+"""Configuration loading and validation for tg-gemini."""
+
 import tomllib
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Literal
 
-# Model Aliases and Actual Names
-# Reference: gemini-cli model selection
-MODEL_ALIASES = {
-    "auto": "gemini-2.5-pro / gemini-3.1-pro-preview",
-    "pro": "gemini-2.5-pro / gemini-3.1-pro-preview",
-    "flash": "gemini-2.5-flash",
-    "flash-lite": "gemini-2.5-flash-lite",
-}
+from loguru import logger
+from pydantic import BaseModel, ConfigDict, Field
 
-SUPPORTED_MODELS = frozenset(
-    {
-        "gemini-3.1-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        *MODEL_ALIASES.keys(),
-    }
-)
+type GeminiMode = Literal["default", "auto_edit", "yolo", "plan"]
+type LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+type AppLanguage = Literal["", "en", "zh"]
 
-VALID_APPROVAL_MODES = frozenset({"default", "auto_edit", "yolo"})
+__all__ = [
+    "AppConfig",
+    "AppLanguage",
+    "DisplayConfig",
+    "GeminiConfig",
+    "GeminiMode",
+    "LogConfig",
+    "LogLevel",
+    "RateLimitConfig",
+    "SkillConfig",
+    "StreamPreviewConfig",
+    "TelegramConfig",
+    "load_config",
+    "resolve_config_path",
+]
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "tg-gemini" / "config.toml"
-
-
-@dataclass(frozen=True)
-class TelegramConfig:
-    bot_token: str
-    allowed_user_ids: list[int] = field(default_factory=list)
+_PosInt = Annotated[int, Field(gt=0)]
+_NonNegInt = Annotated[int, Field(ge=0)]
 
 
-@dataclass(frozen=True)
-class GeminiConfig:
-    model: str = "auto"
-    approval_mode: str = "default"
-    working_dir: str = "."
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-@dataclass(frozen=True)
-class AppConfig:
+class TelegramConfig(_StrictModel):
+    token: str
+    allow_from: str = "*"
+    group_reply_all: bool = False
+    share_session_in_channel: bool = False
+
+
+class GeminiConfig(_StrictModel):
+    work_dir: str = "."
+    model: str = ""
+    mode: GeminiMode = "default"
+    api_key: str = ""
+    cmd: str = "gemini"
+    timeout_mins: _NonNegInt = 0
+
+
+class DisplayConfig(_StrictModel):
+    thinking_max_len: _PosInt = 300
+    tool_max_len: _PosInt = 500
+
+
+class StreamPreviewConfig(_StrictModel):
+    enabled: bool = True
+    interval_ms: _NonNegInt = 1500
+    min_delta_chars: _NonNegInt = 30
+    max_chars: _NonNegInt = 2000  # 0 = no truncation
+
+
+class LogConfig(_StrictModel):
+    level: LogLevel = "INFO"
+
+
+class RateLimitConfig(_StrictModel):
+    max_messages: _NonNegInt = 0  # 0 = disabled
+    window_secs: float = 60.0
+
+
+class SkillConfig(_StrictModel):
+    """Configuration for skill directories."""
+
+    dirs: list[str] = Field(default_factory=list)
+
+
+class AppConfig(_StrictModel):
     telegram: TelegramConfig
-    gemini: GeminiConfig = field(default_factory=GeminiConfig)
+    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    data_dir: str = "~/.tg-gemini"
+    language: AppLanguage = ""
+    log: LogConfig = Field(default_factory=LogConfig)
+    display: DisplayConfig = Field(default_factory=DisplayConfig)
+    stream_preview: StreamPreviewConfig = Field(default_factory=StreamPreviewConfig)
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
+    skills: SkillConfig = Field(default_factory=SkillConfig)
 
 
-def _validate_config(data: dict[str, Any]) -> None:
-    telegram = data.get("telegram")
-    if not isinstance(telegram, dict) or "bot_token" not in telegram:
-        msg = "Config error: 'telegram.bot_token' is required"
-        raise ValueError(msg)
-
-    gemini = data.get("gemini", {})
-    approval_mode = gemini.get("approval_mode", "default")
-    if approval_mode not in VALID_APPROVAL_MODES:
-        msg = f"Config error: 'gemini.approval_mode' must be one of {sorted(VALID_APPROVAL_MODES)}, got '{approval_mode}'"
-        raise ValueError(msg)
-
-    model = gemini.get("model", "auto")
-    if model not in SUPPORTED_MODELS:
-        msg = (
-            f"Config error: 'gemini.model' must be one of {sorted(SUPPORTED_MODELS)}, got '{model}'"
-        )
-        raise ValueError(msg)
+def load_config(path: Path) -> AppConfig:
+    """Load and validate configuration from a TOML file."""
+    with path.open("rb") as f:
+        raw = tomllib.load(f)
+    cfg = AppConfig(**raw)
+    logger.info(f"config loaded: {path}")
+    return cfg
 
 
-def load_config(path: Path | None = None) -> AppConfig:
-    config_path = path or DEFAULT_CONFIG_PATH
-    if not config_path.exists():
-        msg = f"Config file not found: {config_path}"
-        raise FileNotFoundError(msg)
-
-    with config_path.open("rb") as f:
-        data = tomllib.load(f)
-
-    _validate_config(data)
-
-    telegram_data = data["telegram"]
-    telegram = TelegramConfig(
-        bot_token=telegram_data["bot_token"],
-        allowed_user_ids=telegram_data.get("allowed_user_ids", []),
-    )
-
-    gemini_data = data.get("gemini", {})
-    gemini = GeminiConfig(
-        model=gemini_data.get("model", "auto"),
-        approval_mode=gemini_data.get("approval_mode", "default"),
-        working_dir=gemini_data.get("working_dir", "."),
-    )
-
-    return AppConfig(telegram=telegram, gemini=gemini)
+def resolve_config_path(explicit: str | None) -> Path:
+    """Resolve config file path: explicit → local config.toml → ~/.tg-gemini/config.toml."""
+    if explicit:
+        return Path(explicit)
+    local = Path("config.toml")
+    if local.exists():
+        return local
+    return Path.home() / ".tg-gemini" / "config.toml"

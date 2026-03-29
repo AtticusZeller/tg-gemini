@@ -4,99 +4,212 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Purpose
 
-`tg-gemini` is a Python middleware service that bridges Telegram bot interface with Google Gemini CLI headless mode. It runs on a VPS, receives Telegram messages/commands, forwards them to `gemini -p` (headless), processes the stream-JSON output, converts Obsidian Markdown to Telegram-compatible format, and returns responses. It is intentionally minimal: single platform (Telegram), single agent (Gemini CLI).
+`tg-gemini` is a Python middleware service bridging Telegram bot interface with Google Gemini CLI headless mode. It receives Telegram messages/commands, forwards them to `gemini -p --output-format stream-json`, streams JSONL events back to Telegram as they arrive, and converts Markdown to Telegram HTML. Single platform (Telegram), single agent (Gemini CLI).
 
 ## Development Commands
 
-All via `bash dev.sh <command>` (requires `uv` and tools in PATH):
+All via `bash dev.sh <command>` (requires `uv` in PATH):
 
 ```bash
 bash dev.sh format          # ruff check --fix + ruff format
-bash dev.sh lint            # mypy src + ruff check + ruff format --check
+bash dev.sh lint            # ty check + ruff check + ruff format --check
 bash dev.sh test            # coverage run pytest + coverage report + coverage html
 bash dev.sh test -k foo     # run single test matching "foo"
 bash dev.sh check           # full pipeline: format → lint → test → pre-commit
 bash dev.sh bump            # git-cliff changelog + bump-my-version patch + push tags
-bash dev.sh docs dev        # mkdocs serve (local preview)
 ```
 
 Install dependencies: `uv sync --all-groups`
 
+## Modern Python Tooling
+
+This project follows the [Trail of Bits modern Python](https://github.com/trailofbits/cookiecutter-python) conventions. All tooling runs via `uv run`.
+
+### Tool Stack
+
+| Tool | Purpose | Replaces |
+|------|---------|----------|
+| **uv** | Package & env management | pip, virtualenv, pip-tools |
+| **uv_build** | Build backend | hatchling, setuptools |
+| **ruff** | Linting + formatting | flake8, black, isort, pyupgrade |
+| **ty** | Type checking | mypy, pyright |
+| **pytest + coverage** | Testing | unittest |
+
+### Anti-Patterns (never do these)
+
+| Avoid | Use Instead |
+|-------|-------------|
+| `pip install` / `pip uninstall` | `uv add` / `uv remove` |
+| `source .venv/bin/activate` | `uv run <cmd>` |
+| `hatchling` build backend | `uv_build` |
+| `mypy` / `pyright` | `ty check src/` |
+| `[project.optional-dependencies]` for dev | `[dependency-groups]` (PEP 735) |
+| `from __future__ import annotations` | Native Python 3.12+ syntax |
+| `from typing import List, Dict, Tuple` | `list`, `dict`, `tuple` builtins |
+| `Optional[X]` | `X \| None` |
+| `Union[X, Y]` | `X \| Y` |
+| `TYPE_CHECKING` imports used in runtime annotations | Regular imports |
+
+### Dependency Management
+
+```bash
+uv add <pkg>                  # add runtime dependency
+uv add --group dev <pkg>      # add to dev group
+uv add --group test <pkg>     # add to test group
+uv remove <pkg>               # remove dependency
+uv sync --all-groups          # install everything
+```
+
+Dependency groups in `pyproject.toml`:
+- `lint` — `ty`, `ruff`
+- `test` — `pytest`, `pytest-asyncio`, `coverage`
+- `dev` — includes `lint` + `test` + release tools (via `include-group`)
+- `docs` — mkdocs stack
+
+### Type Annotations (Python 3.12+)
+
+- No `from __future__ import annotations` — use native syntax
+- Use `X | None` not `Optional[X]`; `X | Y` not `Union[X, Y]`
+- Use `list[X]`, `dict[K, V]`, `tuple[X, ...]` builtins directly
+- Use `Self` from `typing` for self-referential return types
+- Keep `TYPE_CHECKING` only for types that are **never used at runtime** (e.g., abstract protocol stubs)
+
+### Ruff Configuration
+
+`select = ["ALL"]` with explicit per-rule ignores in `pyproject.toml`. Key ignores:
+
+```
+D, ANN          — docstrings/annotations not enforced
+COM812, ISC001  — formatter conflicts
+S101, S603, S607 — assert + subprocess use is intentional
+INP001          — tests/ is a namespace package (expected)
+RUF006          — fire-and-forget asyncio.create_task is intentional
+ASYNC110        — sleep-in-while-loop for bot lifecycle polling
+```
+
+Run `uv run ruff check src/ tests/ --fix` then `uv run ruff format src/ tests/`.
+
+### Version Management
+
+Version is static in `pyproject.toml` (`version = "0.0.0"`). `__version__` in `__init__.py` reads it via `importlib.metadata.version("tg-gemini")`. Bumped via `bump-my-version` which updates both `pyproject.toml` and `CHANGELOG.md`.
+
 ## Code Quality Requirements
 
-- **95% test coverage** required (`fail_under = 95` in pyproject.toml)
-- **MyPy strict mode** — all code must be fully typed
-- **Ruff** enforces E, W, F, I, B, C4, UP, ARG001; line length is not enforced (E501 ignored)
+- **≥95% test coverage** (`fail_under = 95` in pyproject.toml)
+- **ty** — all code must be fully typed (`uv run ty check src/`)
+- **Ruff** `select = ["ALL"]` with explicit ignores; line length not enforced (E501 ignored)
 - All warnings treated as errors in pytest (`filterwarnings = ["error"]`)
-- Conventional commits required for changelog: `feat:`, `fix:`, `refactor:`, `test:`, `chore:`, etc.
+- Conventional commits: `feat:`, `fix:`, `refactor:`, `test:`, `chore:`, etc.
 
-## Development Pipeline (Mandatory)
+## Architecture
 
-Every code change MUST follow this pipeline in order. Do not skip steps.
-
-1. **Plan** — Before writing code, analyze the requirement, read relevant source/docs, and outline the approach. Use `EnterPlanMode` for non-trivial tasks. Present the plan to the user for approval before proceeding.
-2. **Code** — Implement the feature or fix. Write both production code and tests.
-3. **Format** — Run `bash dev.sh format` to auto-fix formatting and lint issues.
-4. **Lint** — Run `bash dev.sh lint` to verify type checking and lint rules pass.
-5. **Test** — Run `bash dev.sh test` and ensure coverage meets the 95% threshold.
-    - **Single-file change**: Only run the matching test file, e.g. `bash dev.sh test -k foo` for `tests/test_foo.py`.
-    - **Cross-module change**: Run the full test suite.
-    - **Integration tests**: Test cross-module interactions (e.g., CLI → config → gemini pipeline). Place in `tests/test_integration.py` or `tests/integration/`.
-6. **Update docs** — If changes affect architecture, commands, formatting logic, or public APIs, update the relevant files under `docs/`.
-7. **Git commit** — Use conventional commit format. Do not commit unless the user explicitly asks.
-
-## Architecture & Implementation Plan
-
-The actual Telegram↔Gemini middleware is **not yet implemented**. The `src/tg_gemini/` currently contains boilerplate. Implementation should follow this architecture:
-
-### Core Components
-
-1. **CLI entrypoint** (`src/tg_gemini/__main__.py` or `main.py`)
-   - Use `typer` or `click` for CLI; entry point `tg-gemini` is defined in pyproject.toml
-   - Commands: `start`, `stop`, `status`, `upgrade`
-
-2. **Config** (`src/tg_gemini/config.py`)
-   - TOML-based config (use `tomllib` stdlib or `tomli` backport)
-   - Fields: `telegram.bot_token`, `telegram.allowed_user_ids`, `gemini.model`, `gemini.approval_mode`, `gemini.working_dir`
-
-3. **Gemini wrapper** (`src/tg_gemini/gemini.py`)
-   - Invoke: `gemini -p "<prompt>" --output-format stream-json`
-   - Parse newline-delimited JSONL events: `init`, `message`, `tool_use`, `tool_result`, `error`, `result`
-   - Stream assistant message chunks to Telegram as they arrive
-   - Handle exit codes: 0 (success), 1 (error), 42 (invalid input), 53 (turn limit)
-   - Session resume: `gemini -r latest -p "<prompt>" --output-format stream-json`
-
-4. **Markdown converter** (`src/tg_gemini/markdown.py`)
-   - Convert Obsidian/standard Markdown → Telegram MarkdownV2 or HTML parse mode
-   - Key transforms: `**bold**`, `*italic*`, `` `code` ``, fenced code blocks, `[[wikilinks]]` → plain text, `> blockquotes`
-   - Escape Telegram special chars: `_`, `*`, `[`, `]`, `(`, `)`, `~`, `` ` ``, `>`, `#`, `+`, `-`, `=`, `|`, `{`, `}`, `.`, `!`
-
-5. **Telegram bot** (`src/tg_gemini/bot.py`)
-   - Use `python-telegram-bot` (async)
-   - Slash commands: `/start`, `/stop`, `/status`, `/new` (new session), `/resume` (resume latest session), `/model <name>` (switch model)
-   - Filter by `allowed_user_ids` for security
-   - Stream responses using `message.edit_text()` with incremental updates
-
-### Key Technical Decisions
-
-- **Async**: Use `asyncio` + `asyncio.create_subprocess_exec` for non-blocking Gemini subprocess calls
-- **Stream processing**: Read JSONL line-by-line from subprocess stdout, accumulate `message` chunks, send partial updates to Telegram every N chars or on sentence boundaries
-- **Telegram parse mode**: Use `HTML` parse mode (more forgiving than MarkdownV2 for escaping)
-- **Config location**: `~/.config/tg-gemini/config.toml` (XDG), or path passed via `--config` flag
-
-## Package Structure
+### Component Overview
 
 ```
-src/tg_gemini/
-├── __init__.py      # version + main() entry point
-├── config.py        # TOML config loading/validation (dataclasses or pydantic)
-├── gemini.py        # subprocess wrapper, stream-JSON parsing
-├── markdown.py      # Obsidian MD → Telegram HTML conversion
-├── bot.py           # python-telegram-bot handlers
-└── cli.py           # typer/click CLI (start/stop/status/upgrade)
-tests/
-├── test_config.py
-├── test_gemini.py   # mock subprocess output with sample JSONL fixtures
-├── test_markdown.py # conversion edge cases
-└── test_bot.py      # handler logic (mock telegram objects)
+CLI (cli.py / typer)
+  └── Engine (engine.py)               # orchestrates all components
+        ├── TelegramPlatform            # polling, routing, sending
+        │     └── markdown_to_html()   # Obsidian MD → Telegram HTML
+        ├── GeminiAgent                 # factory for GeminiSession
+        │     └── GeminiSession        # subprocess + JSONL stream parser
+        ├── SessionManager              # per-user session state (JSON-persisted)
+        ├── StreamPreview               # throttled streaming message edits
+        ├── SkillRegistry               # auto-loads from <work_dir>/.gemini/skills/; extra dirs via [skills].dirs
+        ├── CommandLoader               # auto-loads from <work_dir>/.gemini/commands/*.toml
+        └── I18n                        # EN/ZH translations
 ```
+
+### Data Flow
+
+1. `TelegramPlatform` receives a Telegram update → builds `Message` (with `ReplyContext`) → calls `Engine.handle_message()`
+2. `Engine` checks for slash commands or routes to `_process()`, which locks the `Session`
+3. `GeminiAgent.start_session()` returns a `GeminiSession`; `session.send()` spawns the subprocess and starts `_read_loop()` in a background task
+4. `_read_loop()` reads JSONL lines from stdout → emits `Event` objects into `asyncio.Queue`
+5. `Engine._run_gemini()` consumes events: `TEXT` → `StreamPreview.append_text()`, `TOOL_USE`/`TOOL_RESULT` → `platform.send()`, `RESULT` → `StreamPreview.finish()`
+6. `StreamPreview` batches Telegram message edits (throttled by `interval_ms` / `min_delta_chars`)
+
+### Key Design Decisions
+
+- **Session key**: `"telegram:{chat_id}:{user_id}"` — one session per user per chat
+- **Concurrency**: per-session `asyncio.Lock`; overflow queued up to `_MAX_QUEUE=5`
+- **Parse mode**: Telegram `HTML` (more forgiving than MarkdownV2); fallback to plain text on `BadRequest`
+- **Config**: `~/.tg-gemini/config.toml` (default), `config.toml` (local), or `--config` flag
+- **`allow_from`**: `"*"` (open) or comma-separated Telegram user IDs
+- **Gemini modes**: `default`, `auto_edit`, `yolo` (`-y`), `plan` — mapped to CLI flags in `GeminiSession`
+- **Attachments**: images/files saved to `tempfile.gettempdir()` as `@file` references in prompt; cleaned up after subprocess exits
+- **Skills**: Auto-loaded from `<work_dir>/.gemini/skills/<name>/SKILL.md`; optional extra dirs via `[skills].dirs` in config. YAML frontmatter (`name`, `description`) optional; body is the skill prompt.
+- **Commands**: Auto-loaded from `<work_dir>/.gemini/commands/**/*.toml`; nested paths flatten with `_` (e.g. `git/commit.toml` → `/git_commit`). Support `{{args}}`, `@{filepath}`, `!{cmd}` syntax.
+- **Command name normalization**: All custom command/skill names are normalized to `[a-z0-9_]` (via `_to_tg_command`) before registering in the Telegram menu — hyphens, colons, slashes all become `_`.
+
+### Config Schema (`config.toml`)
+
+```toml
+[telegram]
+token = "BOT_TOKEN"
+allow_from = "*"          # or "123456789,987654321"
+
+[gemini]
+work_dir = "."
+model = ""                # e.g. "gemini-2.5-pro"
+mode = "default"          # default | auto_edit | yolo | plan
+cmd = "gemini"
+api_key = ""
+timeout_mins = 0
+
+[log]
+level = "INFO"
+
+[display]
+thinking_max_len = 300
+tool_max_len = 500
+
+[stream_preview]
+enabled = true
+interval_ms = 1500
+min_delta_chars = 30
+max_chars = 2000
+
+# Extra skill directories (optional; default .gemini/skills/ auto-loaded from work_dir)
+[skills]
+dirs = ["~/.tg-gemini/skills"]
+```
+
+### Slash Commands
+
+| Command | Action |
+|---|---|
+| `/new` | Reset to a new Gemini session |
+| `/list [query]` | List sessions (fuzzy filter with query) |
+| `/switch <id\|name>` | Switch active session |
+| `/current` | Show current session info |
+| `/history` | Show recent conversation history |
+| `/name <new_name>` | Rename current session |
+| `/delete` | Enter delete-session mode |
+| `/status` | Show bot/session status |
+| `/model [name]` | List or switch model |
+| `/mode [mode]` | List or switch approval mode |
+| `/lang [en\|zh]` | Switch UI language |
+| `/quiet` | Toggle quiet mode (suppress tool output) |
+| `/stop` | Notify stop (best-effort; no subprocess kill) |
+| `/help` | Show command list |
+| `/commands reload` | Reload Commands and Skills, refresh Telegram menu |
+
+**Command priority**: Built-in commands → Commands (`<work_dir>/.gemini/commands/`) → Skills (`<work_dir>/.gemini/skills/` + extra dirs)
+
+### JSONL Event Mapping
+
+Gemini CLI emits these event types on stdout; `GeminiSession._handle_event()` maps them:
+
+| Gemini type | `EventType` | Engine action |
+|---|---|---|
+| `init` | `TEXT` (with `session_id`) | Store `agent_session_id` for session resume |
+| `message` role=user | ignored | User echo — skipped |
+| `message` role=assistant, `delta:true` | `TEXT` | Accumulate + stream preview |
+| `tool_use` | `TOOL_USE` | Freeze preview, send tool notification |
+| `tool_result` | `TOOL_RESULT` | Send result notification |
+| `error` | `ERROR` | Send error message |
+| `result` | `RESULT` | Finalize preview or send full response |
+
+Note: In stream-json mode, **all** assistant text arrives as `delta:true` messages — there are no non-delta assistant messages. The `_pending_msgs` buffer in `GeminiSession` handles the edge case of assistant messages without a `delta` field (flushed as `THINKING` before `tool_use`, as `TEXT` before `result`), but this path is not exercised in normal operation.
+
+For complete stream-json event schemas, all built-in tool parameters, `ToolErrorType` enum, exit codes, and session/resume details, see [`docs/gemini-cli/stream-json.md`](docs/gemini-cli/stream-json.md).

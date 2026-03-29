@@ -17,7 +17,8 @@
       "Bash(cd C:/Users/18317/DevSpace/tg-gemini && uv run ruff check src tests --fix 2>&1 && uv run ruff format src tests 2>&1 && uv run mypy src 2>&1)",
       "Bash(uv run:*)",
       "Bash(bash dev.sh check)",
-      "Bash(bash dev.sh lint && bash dev.sh test)"
+      "Bash(bash dev.sh lint && bash dev.sh test)",
+      "Bash(git merge:*)"
     ]
   }
 }

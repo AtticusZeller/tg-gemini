@@ -1,78 +1,186 @@
-# Architecture
+# 架构设计
 
-This document details the system design and message processing flow of `tg-gemini`.
+## 概览
 
-## 1. Overview
+tg-gemini 是一个极简中间件，单向链路：
 
-`tg-gemini` acts as a middle-tier bridge between the **Telegram Bot API** and the **Gemini CLI**. It decouples the messaging platform from the AI agent execution using a modular, asynchronous architecture.
-
-### Architecture Diagram
-
-```mermaid
-graph TD
-    subgraph "Telegram Cloud"
-        T_User[Telegram User]
-        T_Bot[Telegram Bot API]
-    end
-
-    subgraph "tg-gemini Middleware"
-        subgraph "Platform Layer (aiogram)"
-            P_TG[Telegram Router/Handlers]
-        end
-
-        subgraph "Core Layer (Engine)"
-            E_Core[Core Orchestrator]
-            S_Mgr[Session Manager & Locks]
-            P_JSON[Pydantic Event Parser]
-        end
-
-        subgraph "Agent Layer (Subprocess)"
-            A_GEM[Gemini CLI Wrapper]
-        end
-    end
-
-    subgraph "Local Environment"
-        CLI_GEM[Gemini CLI Binary]
-        WORK_DIR[Workspace/Project Files]
-    end
-
-    T_User -- "Message/Command" --> T_Bot
-    T_Bot -- "Webhook/Polling" --> P_TG
-    P_TG -- "Internal Message" --> E_Core
-    E_Core -- "Lock & Resume" --> S_Mgr
-    E_Core -- "asyncio.exec" --> A_GEM
-    A_GEM -- "flags (-p, -r, -o)" --> CLI_GEM
-    CLI_GEM -- "Read/Write" --> WORK_DIR
-    CLI_GEM -- "stream-json (stdout)" --> P_JSON
-    P_JSON -- "Typed Events" --> E_Core
-    E_Core -- "Markdown Conversion" --> P_TG
-    P_TG -- "Streaming Update" --> T_Bot
-    T_Bot -- "Delivery" --> T_User
+```
+手机 Telegram  ──→  tg-gemini (VPS)  ──→  gemini CLI (本地)
+     ↑                                          │
+     └──────────── 流式响应 ←───────────────────┘
 ```
 
-## 2. Layers
+**设计原则：**
+- 单平台（Telegram），单 Agent（Gemini CLI）
+- 不重复造轮子——直接调用 `gemini -p` 命令行
+- 流式输出：Gemini 输出一段，Telegram 预览消息即时更新
 
-### 2.1 Platform Layer (`tg_gemini.bot` and `tg_gemini.cli`)
-- **Framework:** `aiogram 3.x` and `Typer`.
-- **Entry Point:** `tg_gemini.cli` provides the command-line interface to start the bot, check configuration, and view version info.
-- **Responsibility:** Manages the bot lifecycle, routes incoming updates to handlers, and handles Telegram-specific API calls (sending/editing messages).
-- **Tool Display:** Formats tool use events as rich HTML messages with `<pre>` code blocks, bold names, and diff previews. Tool results edit in-place swapping 🔧→✅/❌.
-- **Message Ordering:** When tools are used, the initial "Thinking..." is deleted and the final response is sent as a new message after tool messages, preserving chronological order.
-- **Security:** Implements user ID filtering based on the `allowed_user_ids` whitelist.
+## 组件关系图
 
-### 2.2 Core Layer (`tg_gemini.bot`, `tg_gemini.config`, `tg_gemini.events`)
-- **Orchestration:** The `_process_stream` function coordinates the execution of the agent and the real-time update of the Telegram UI.
-- **Configuration:** `tg_gemini.config` handles loading and validating the TOML configuration, including model aliases and default settings.
-- **Session Management:** Tracks user states (active model, session ID, custom names) with per-user `asyncio.Lock` (`mutation_lock`) that guards only microsecond-scale state mutations. Streaming itself is lock-free — commands remain unblocked during long responses. Sessions persist to `~/.config/tg-gemini/sessions.json` via atomic JSON writes, surviving bot restarts without requiring manual `/resume`.
-- **Event Validation:** Uses **Pydantic v2** models (`tg_gemini.events`) to strictly validate and parse the `stream-json` output from the Gemini CLI. Each event (init, message, tool_use, tool_result, error, result) is converted into a typed Python object.
+```
+┌─────────────────────────────────────────────────────────┐
+│                      tg-gemini 进程                      │
+│                                                         │
+│  ┌──────────┐    ┌──────────┐    ┌──────────────────┐  │
+│  │  cli.py  │───▶│engine.py │───▶│   gemini.py      │  │
+│  │  typer   │    │ 消息路由  │    │ subprocess 包装   │  │
+│  └──────────┘    └────┬─────┘    └──────────────────┘  │
+│                       │                    │             │
+│  ┌──────────────────┐ │  ┌─────────────┐  │             │
+│  │telegram_platform │◀┘  │ streaming.py│◀─┘             │
+│  │ python-tg-bot    │    │ 流式预览节流  │               │
+│  └──────────────────┘    └─────────────┘               │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │
+│  │config.py │  │session.py│  │markdown  │  │i18n.py │  │
+│  │pydantic  │  │会话管理   │  │转换器     │  │中英双语 │  │
+│  └──────────┘  └──────────┘  └──────────┘  └────────┘  │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │card.py   │  │ratelimit │  │dedup.py  │              │
+│  │卡片 UI   │  │速率限制   │  │消息去重   │              │
+│  └──────────┘  └──────────┘  └──────────┘              │
+│                                                         │
+│  ┌────────────────┐  ┌──────────────────┐              │
+│  │ commands.py    │  │ skills.py        │              │
+│  │ .gemini/cmds   │  │ .gemini/skills   │              │
+│  └────────────────┘  └──────────────────┘              │
+└─────────────────────────────────────────────────────────┘
+         │                              ▲
+         ▼                              │
+┌─────────────────┐           ┌─────────────────┐
+│  Telegram API   │           │  gemini CLI     │
+│  长轮询          │           │  --output-format│
+│  消息接收/发送    │           │  stream-json    │
+└─────────────────┘           └─────────────────┘
+```
 
-### 2.3 Agent Layer (`tg_gemini.gemini`)
-- **Execution:** Uses `asyncio.create_subprocess_exec` to launch the Gemini CLI in a non-blocking way with a 10MB stream buffer limit.
-- **Streaming:** Reads `stdout` line-by-line, converting the raw NDJSON stream into typed Pydantic events.
-- **Continuity:** Automatically handles session resumption using the `--resume` flag and the `session_id` provided in the `init` event. Session state (session_id, model, custom_names) is persisted to disk and restored on restart — users can continue old conversations without any manual intervention.
+## 消息处理数据流
 
-## 3. Concurrency & Performance
+```
+用户发 Telegram 消息
+        │
+        ▼
+TelegramPlatform._handle_update()
+  ├─ 过滤旧消息（>30s 丢弃）
+  ├─ 验证 allow_from 白名单
+  ├─ 群聊过滤（group_reply_all / @mention / reply-to-bot）
+  ├─ 生成 session_key（per-user 或 shared）
+  ├─ 提取文本/图片/文件
+  └─ 构造 CoreMessage → Engine.handle_message()
+              │
+              ▼
+         Engine.handle_message()
+           ├─ 空消息? → 忽略
+           ├─ 消息去重（MessageDedup）
+           ├─ 速率限制（RateLimiter）
+           ├─ /command? → handle_command()
+           ├─ Session 忙? → 加入队列（最多5条）
+           └─ → _process() → _run_gemini()
+                                  │
+                                  ▼
+                        GeminiSession.send()
+                          asyncio.create_subprocess_exec(
+                            "gemini", "--output-format", "stream-json",
+                            "-p", prompt, ...
+                          )
+                                  │
+                              JSONL 流
+                                  │
+                    ┌─────────────▼──────────────┐
+                    │    _read_loop() 逐行解析     │
+                    │  init → 存储 session_id     │
+                    │  message(delta) → EventText  │
+                    │  message(非delta) → 缓冲     │
+                    │  tool_use → 刷新缓冲为Thinking│
+                    │  tool_result → EventToolResult│
+                    │  error → EventError          │
+                    │  result → 刷新缓冲为Text      │
+                    └─────────────┬──────────────┘
+                                  │ asyncio.Queue[Event]
+                                  ▼
+                         Engine._run_gemini() 消费事件
+                           TEXT → StreamPreview.append_text()
+                           THINKING → 发送 <i>思考中...</i>
+                           TOOL_USE → freeze预览 + 发送工具通知
+                           TOOL_RESULT → 发送结果摘要（quiet模式跳过）
+                           ERROR → 发送错误消息
+                           RESULT → preview.finish() 或 platform.reply()
+                                  → session.add_history()（记录历史）
+```
 
-- **Non-blocking I/O:** The entire service is built on `asyncio`.
-- **Throttled Updates:** To comply with Telegram API rate limits, UI updates during streaming are throttled based on both time intervals (1.5s) and character count thresholds (200 chars).
-- **Scalability:** Sessions are persisted to a JSON file (`~/.config/tg-gemini/sessions.json`) with atomic writes, designed for personal or small-team use. For high-volume multi-instance deployments, the `SessionStore` backend could be extended to use Redis or a database.
+## 文件结构
+
+```
+src/tg_gemini/
+├── __init__.py          # 版本号（importlib.metadata）
+├── cli.py               # typer 入口：tg-gemini start
+├── config.py            # pydantic v2 TOML 配置，frozen + extra=forbid
+├── engine.py            # 消息路由、命令分发、事件循环、回调处理
+├── gemini.py            # GeminiAgent + GeminiSession（子进程 + JSONL 解析）
+├── commands.py          # CommandLoader：自动加载 .gemini/commands/*.toml
+├── skills.py            # SkillRegistry：自动加载 .gemini/skills/*/SKILL.md
+├── markdown.py          # Obsidian MD → Telegram HTML 转换器
+├── models.py            # 共享数据类：Event、Message、ReplyContext 等
+├── i18n.py              # 中英双语消息（EN/ZH）
+├── session.py           # SessionManager（多会话 + 历史 + JSON 持久化）
+├── streaming.py         # StreamPreview 节流更新
+├── telegram_platform.py # python-telegram-bot v21+ 平台封装
+├── card.py              # CardBuilder 卡片 UI（HTML + InlineKeyboardMarkup）
+├── ratelimit.py         # 滑动窗口速率限制器
+└── dedup.py             # TTL 消息去重
+
+tests/                   # 717 个测试，98.52% 覆盖率
+├── test_config.py
+├── test_engine.py
+├── test_gemini.py
+├── test_i18n.py
+├── test_markdown.py
+├── test_models.py
+├── test_session.py
+├── test_streaming.py
+├── test_telegram.py
+├── test_cli.py
+├── test_card.py
+├── test_ratelimit.py
+├── test_dedup.py
+├── test_commands.py
+└── test_skills.py
+```
+
+## 关键设计决策
+
+### Session Key 格式
+
+```
+私聊 / 群聊独立模式：  telegram:{chat_id}:{user_id}
+群聊共享模式：         telegram:{chat_id}:shared
+```
+
+同一用户在不同群组有不同 session。
+
+### 对话 Resume 机制
+
+```
+第一轮：gemini --output-format stream-json -p "你好"
+  → init 事件携带 session_id: "abc123"
+  → 存入 session.agent_session_id
+
+第二轮：gemini --output-format stream-json --resume abc123 -p "继续话题"
+  → Gemini CLI 加载 ~/.gemini/tmp/.../chats/session-abc123.json
+```
+
+### 并发保护
+
+每个 Session 有一个 `asyncio.Lock`：
+- `try_lock()` 失败 → 消息加入队列（上限 5 条）→ 回复「⏳ Agent 正忙」
+- 处理完成后 `unlock()` → 自动从队列取下一条
+
+### 流式预览节流
+
+Telegram 限制：同一消息每秒最多编辑 1 次。StreamPreview 实现滑动窗口节流：
+- 距上次发送 ≥ `interval_ms` 且 新增 ≥ `min_delta_chars` → 立即 flush
+- 否则 → 延迟到下一个 interval
+- `finish()` 时始终发送完整文本（不受 `max_chars` 限制）
+
+详细实现见 [internals.md](internals.md)。

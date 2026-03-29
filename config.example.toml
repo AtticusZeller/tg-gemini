@@ -1,0 +1,127 @@
+# tg-gemini 配置示例
+# 复制此文件到 ~/.tg-gemini/config.toml 并修改相应值
+# 文档: https://github.com/atticuszeller/tg-gemini/blob/main/docs/configuration.md
+
+# ── 顶层字段 ──────────────────────────────────────────────────────────────────
+# 注意：顶层字段必须写在任何 [section] 之前
+
+# 数据目录：存放 sessions.json 等持久化文件
+data_dir = "~/.tg-gemini"
+
+# 界面语言
+# ""   = 自动检测（消息含 CJK 字符 → ZH，否则 → EN）
+# "en" = 强制英文
+# "zh" = 强制中文
+language = ""
+
+
+# ── Telegram ───────────────────────────────────────────────────────────────────
+[telegram]
+# Bot Token（必填）——通过 @BotFather 创建
+# 格式：123456789:ABCDEFGHijklmnopQRSTUVwxyz
+token = "YOUR_BOT_TOKEN_HERE"
+
+# 用户白名单
+# "*"            = 允许所有用户（公开 bot）
+# "123456789"    = 只允许单个用户
+# "111,222,333"  = 允许多个用户（逗号分隔）
+# 查找自己的 ID：向 @userinfobot 发消息
+allow_from = "*"
+
+# 群聊模式：回复所有群消息（不需要 @bot 或回复 bot）
+# false = 只响应 @bot 提及、回复 bot 的消息、以及 /command
+# true  = 响应群里所有消息（慎用，流量大）
+group_reply_all = false
+
+# 群聊会话共享模式
+# false = 群里每个用户有独立的 Gemini 会话（默认）
+# true  = 群里所有用户共享一个 Gemini 会话
+share_session_in_channel = false
+
+
+# ── Gemini CLI ────────────────────────────────────────────────────────────────
+[gemini]
+# gemini 命令的工作目录（Gemini 能访问该目录下的文件）
+# 推荐设置为你的项目根目录
+work_dir = "."
+
+# 模型名称（空字符串 = 使用 CLI 默认值）
+# 可用模型（运行 `gemini /model manage` 查看最新列表）：
+#   gemini-3.1-pro-preview  — 最新旗舰
+#   gemini-3-flash-preview  — 最新快速
+#   gemini-2.5-pro          — 稳定旗舰
+#   gemini-2.5-flash        — 稳定快速（推荐）
+#   gemini-2.5-flash-lite   — 轻量版
+model = ""
+
+# 工具调用审批模式
+# "default"   = 每次工具调用需确认（注意：无交互环境下会卡住，不推荐）
+# "auto_edit" = 自动批准文件读写，其他操作需确认
+# "yolo"      = 全自动批准所有操作（-y 标志，推荐用于服务端）
+# "plan"      = 只读计划模式，仅生成方案不执行工具
+mode = "yolo"
+
+# Gemini API Key（可选）
+# 留空则使用 gemini CLI 自身的认证（推荐）
+# 也可通过环境变量 GEMINI_API_KEY 设置
+api_key = ""
+
+# gemini 可执行文件路径（在 PATH 中找到即可）
+cmd = "gemini"
+
+# 每轮超时分钟数
+# 0 = 不限制（推荐，长任务不会被中断）
+# N = N 分钟后自动 kill 子进程
+timeout_mins = 0
+
+
+# ── 日志 ───────────────────────────────────────────────────────────────────────
+[log]
+# 日志级别：DEBUG | INFO | WARNING | ERROR | CRITICAL
+level = "INFO"
+
+
+# ── 显示设置 ──────────────────────────────────────────────────────────────────
+[display]
+# Gemini 思考过程文本最大显示字符数（超出部分截断并加 …）
+thinking_max_len = 300
+
+# 工具调用参数最大显示字符数
+tool_max_len = 500
+
+
+# ── 流式预览 ──────────────────────────────────────────────────────────────────
+[stream_preview]
+# 是否开启流式预览（边生成边更新 Telegram 消息）
+enabled = true
+
+# 两次消息编辑之间的最小间隔（毫秒）
+# Telegram 限制：同一消息最多每秒编辑 1 次
+# 网络不稳定时可适当增大（如 3000）
+interval_ms = 1500
+
+# 每次更新至少新增的字符数（积累够了才触发编辑）
+# 较大值 = 更新频率更低，减少 API 调用
+min_delta_chars = 30
+
+# 预览消息最大字符数（0 = 不限制）
+# 超出部分显示为 "…"，finish 时始终发送完整响应
+max_chars = 2000
+
+
+# ── 速率限制 ──────────────────────────────────────────────────────────────────
+[rate_limit]
+# 每个用户在时间窗口内最大消息数
+# 0 = 不限制（默认）
+max_messages = 0
+
+# 时间窗口大小（秒）
+window_secs = 60.0
+
+
+# ── Skills ────────────────────────────────────────────────────────────────────
+[skills]
+# Skill 目录列表（可选）
+# 每个目录下按 <name>/SKILL.md 结构组织
+# 详见: https://github.com/atticuszeller/tg-gemini/blob/main/docs/commands.md
+dirs = []
