@@ -613,7 +613,11 @@ class GeminiAgent:
             return False
 
     async def run_stream(
-        self, prompt: str, session_id: str | None, model: str | None, stop_event: asyncio.Event
+        self,
+        prompt: str,
+        session_id: str | None,
+        model: str | None,
+        stop_event: asyncio.Event,
     ) -> "AsyncGenerator[Event, None]":
         """Stream events from a Gemini session with stop/interrupt support.
 

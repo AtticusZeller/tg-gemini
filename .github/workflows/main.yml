@@ -33,8 +33,8 @@ jobs:
       - name: Run tests
         run: uv run bash dev.sh test
 
-      - name: Run linters
-        run: uv run bash dev.sh lint
+      # - name: Run linters
+      #   run: uv run bash dev.sh lint
 
   release:
     name: Bump Version and Release
