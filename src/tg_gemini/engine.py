@@ -430,6 +430,19 @@ class Engine:
                             await self._platform.edit_card(ctx, message_id, card)
                         case _:
                             pass
+
+                case "/model":
+                    if args:
+                        self._agent.model = args
+                    card = self._build_model_card()
+                    await self._platform.edit_card(ctx, message_id, card)
+
+                case "/delete_one":
+                    if args:
+                        self._sessions.delete_sessions([args])
+                    card = self._build_list_card(session_key, "")
+                    await self._platform.edit_card(ctx, message_id, card)
+
                 case _:
                     logger.debug("Engine: unhandled act callback", cmd=cmd)
             return
@@ -471,6 +484,19 @@ class Engine:
             .build()
         )
 
+    def _build_model_card(self) -> Card:
+        current = self._agent.model or "(default)"
+        models = self._agent.available_models()
+        buttons = [
+            CardButton(m.desc or m.name, f"act:cmd:/model {m.name}") for m in models
+        ]
+        return (
+            CardBuilder()
+            .title(self._i18n.tf(MsgKey.MODEL_CURRENT, current))
+            .actions(*buttons)
+            .build()
+        )
+
     def _build_list_card(self, session_key: str, args: str) -> Card:
         page = 1
         with contextlib.suppress(ValueError):
@@ -490,12 +516,12 @@ class Engine:
         else:
             for i, s in enumerate(page_sessions, start=start + 1):
                 marker = "▶ " if s.id == active_sid else ""
-                btn = (
-                    None
-                    if s.id == active_sid
-                    else CardButton("Switch", f"act:cmd:/switch {s.id}")
-                )
-                builder.list_item(f"{marker}{i}. {s.summary}", btn)
+                buttons: list[CardButton] = [
+                    CardButton("🗑️ Delete", f"act:cmd:/delete_one {s.id}")
+                ]
+                if s.id != active_sid:
+                    buttons.insert(0, CardButton("Switch", f"act:cmd:/switch {s.id}"))
+                builder.list_item(f"{marker}{i}. {s.summary}", buttons=buttons)
             if total_pages > 1:
                 builder.note(self._i18n.tf(MsgKey.PAGE_NAV, page, total_pages))
                 nav_btns: list[CardButton] = []
@@ -549,16 +575,11 @@ class Engine:
             )
         await self._reply(msg, self._i18n.t(MsgKey.STOP_OK))
 
-    async def _cmd_model(self, msg: Message, args: str) -> None:
-        if args:
-            self._agent.model = args
-            await self._reply(msg, self._i18n.tf(MsgKey.MODEL_SWITCHED, args))
-        else:
-            current = self._agent.model or "(default)"
-            models = self._agent.available_models()
-            model_list = "\n".join(f"  • {m.name}" for m in models)
-            text = self._i18n.tf(MsgKey.MODEL_CURRENT, current) + "\n\n" + model_list
-            await self._reply(msg, text)
+    async def _cmd_model(self, msg: Message, _args: str) -> None:
+        if msg.reply_ctx is None:
+            return
+        card = self._build_model_card()
+        await self._platform.send_card(msg.reply_ctx, card)
 
     async def _cmd_mode(self, msg: Message, args: str) -> None:
         valid_modes = ("default", "auto_edit", "yolo", "plan")

@@ -171,38 +171,55 @@ async def test_handle_command_stop() -> None:
 
 
 async def test_handle_command_model_with_arg() -> None:
+    """When /model is called with a model name argument, it still shows the card."""
     engine, agent, platform = _make_engine()
+    from tg_gemini.models import ModelOption
+
+    agent.available_models.return_value = [
+        ModelOption(name="gemini-2.5-flash", desc="Flash"),
+        ModelOption(name="gemini-2.5-pro", desc="Pro"),
+    ]
     msg = _make_message()
     result = await engine.handle_command(msg, "/model gemini-2.5-flash")
     assert result is True
-    assert agent.model == "gemini-2.5-flash"
-    platform.send.assert_called_once()
-    text = platform.send.call_args[0][1]
-    assert "gemini-2.5-flash" in text
+    platform.send_card.assert_called_once()
+    card = platform.send_card.call_args[0][1]
+    # Card should be sent regardless of args — model selection only via button click
+    assert card.has_buttons()
 
 
 async def test_handle_command_model_no_arg() -> None:
+    """When /model is called with no args, sends a Card (not plain text)."""
     engine, agent, platform = _make_engine()
     agent.model = "flash"
-    agent.available_models.return_value = [MagicMock(name="flash")]
+    from tg_gemini.models import ModelOption
+
+    agent.available_models.return_value = [ModelOption(name="flash", desc="Flash")]
     msg = _make_message()
     result = await engine.handle_command(msg, "/model")
     assert result is True
-    platform.send.assert_called_once()
-    text = platform.send.call_args[0][1]
-    assert "flash" in text
+    platform.send_card.assert_called_once()
+    card = platform.send_card.call_args[0][1]
+    rendered = card.render_text()
+    assert "flash" in rendered
 
 
 async def test_handle_command_model_no_model_set() -> None:
+    """When /model has no model set, shows '(default)' in the card title."""
     engine, agent, platform = _make_engine()
     agent.model = ""
-    agent.available_models.return_value = []
+    from tg_gemini.models import ModelOption
+
+    agent.available_models.return_value = [
+        ModelOption(name="gemini-2.5-flash", desc="Flash")
+    ]
     msg = _make_message()
     result = await engine.handle_command(msg, "/model")
     assert result is True
-    platform.send.assert_called_once()
-    text = platform.send.call_args[0][1]
-    assert "(default)" in text
+    platform.send_card.assert_called_once()
+    card = platform.send_card.call_args[0][1]
+    rendered = card.render_text()
+    assert "(default)" in rendered
 
 
 async def test_handle_command_mode_valid() -> None:
@@ -1489,6 +1506,130 @@ async def test_delete_e2e_cancel_flow() -> None:
     assert istate.delete_selected == set()
 
 
+# ---------------------------------------------------------------------------
+# /list inline delete button tests
+# ---------------------------------------------------------------------------
+
+
+async def test_build_list_card_has_delete_buttons() -> None:
+    """Each session row in /list has a Delete button alongside Switch."""
+    engine, _, _ = _make_engine()
+    key = "telegram:1:2"
+    s1 = engine._sessions.new_session(key, name="Session A")
+    engine._sessions.new_session(key, name="Session B")  # active
+
+    card = engine._build_list_card(key, "")
+    rows = card.collect_buttons()
+    # Flatten all buttons
+    all_buttons = [btn for row in rows for btn in row]
+    delete_btns = [btn for btn in all_buttons if "delete_one" in btn.callback_data]
+    assert len(delete_btns) == 2, "Both sessions should have a Delete button"
+
+
+async def test_build_list_card_each_row_has_switch_and_delete() -> None:
+    """Non-active session rows have both Switch and Delete buttons."""
+    engine, _, _ = _make_engine()
+    key = "telegram:1:2"
+    s1 = engine._sessions.new_session(key, name="Alpha")
+    engine._sessions.new_session(key, name="Beta")  # active (most recent)
+
+    card = engine._build_list_card(key, "")
+    rows = card.collect_buttons()
+
+    # row[0]: Beta (active) — Delete only
+    # row[1]: Alpha (non-active) — Switch + Delete
+    active_row = rows[0]
+    inactive_row = rows[1]
+
+    # Active: Delete only
+    assert len(active_row) == 1
+    assert "delete_one" in active_row[0].callback_data
+
+    # Inactive: Switch + Delete
+    inactive_cbs = {btn.callback_data for btn in inactive_row}
+    assert any("switch" in cb for cb in inactive_cbs), (
+        f"Should have Switch: {inactive_cbs}"
+    )
+    assert any("delete_one" in cb for cb in inactive_cbs), (
+        f"Should have Delete: {inactive_cbs}"
+    )
+
+
+async def test_build_list_card_active_session_still_has_delete() -> None:
+    """The active session (▶ marker) still has a Delete button."""
+    engine, _, _ = _make_engine()
+    key = "telegram:1:2"
+    engine._sessions.new_session(key, name="Only Session")
+
+    card = engine._build_list_card(key, "")
+    rows = card.collect_buttons()
+    all_buttons = [btn for row in rows for btn in row]
+    delete_btns = [btn for btn in all_buttons if "delete_one" in btn.callback_data]
+    assert len(delete_btns) == 1
+
+
+async def test_handle_act_callback_delete_one_deletes_session() -> None:
+    """Clicking the Delete button removes the session immediately."""
+    engine, _agent, platform = _make_engine()
+    key = "telegram:1:2"
+    s1 = engine._sessions.new_session(key, name="To Delete")
+    engine._sessions.new_session(key, name="To Keep")  # active
+
+    # Simulate clicking Delete on s1
+    await engine._handle_act_callback(f"act:cmd:/delete_one {s1.id}", "2", 1, 77)
+
+    assert engine._sessions.find_session(s1.id) is None
+    platform.edit_card.assert_called_once()
+
+
+async def test_handle_act_callback_delete_one_rebuilds_list_card() -> None:
+    """After deleting, the list card is rebuilt showing remaining sessions."""
+    engine, _agent, platform = _make_engine()
+    key = "telegram:1:2"
+    s1 = engine._sessions.new_session(key, name="Delete Me")
+    engine._sessions.new_session(key, name="Keep Me")
+
+    await engine._handle_act_callback(f"act:cmd:/delete_one {s1.id}", "2", 1, 77)
+
+    # edit_card was called with a rebuilt card
+    call_args = platform.edit_card.call_args
+    card = call_args[0][2]  # (ctx, message_id, card)
+    rendered = card.render_text()
+    assert "Delete Me" not in rendered
+    assert "Keep Me" in rendered
+
+
+async def test_handle_act_callback_delete_one_last_session_shows_empty() -> None:
+    """Deleting the last session shows the empty state card."""
+    engine, _agent, platform = _make_engine()
+    key = "telegram:1:2"
+    s1 = engine._sessions.new_session(key, name="Only One")
+
+    await engine._handle_act_callback(f"act:cmd:/delete_one {s1.id}", "2", 1, 77)
+
+    platform.edit_card.assert_called_once()
+    card = platform.edit_card.call_args[0][2]
+    rendered = card.render_text()
+    assert "No sessions" in rendered or "暂无" in rendered
+
+
+async def test_handle_act_callback_delete_one_active_session_switches() -> None:
+    """Deleting the active session promotes the next one."""
+    engine, _agent, platform = _make_engine()
+    key = "telegram:1:2"
+    s1 = engine._sessions.new_session(key, name="First")
+    s2 = engine._sessions.new_session(key, name="Second")
+
+    # s2 is active (most recent)
+    assert engine._sessions.active_session_id(key) == s2.id
+
+    # Delete s2 (active)
+    await engine._handle_act_callback(f"act:cmd:/delete_one {s2.id}", "2", 1, 77)
+
+    # s1 should now be active
+    assert engine._sessions.active_session_id(key) == s1.id
+
+
 async def test_switch_by_session_id_not_stale_index() -> None:
     """P1 fix: Switch button uses session ID so reordering doesn't cause wrong switch."""
     engine, _agent, platform = _make_engine()
@@ -1736,3 +1877,156 @@ async def test_handle_command_dispatches_to_skill() -> None:
     result = await engine.handle_command(msg, "/refactor my code")
     assert result is True
     engine._skill_registry.get.assert_called_once_with("refactor")
+
+
+# ---------------------------------------------------------------------------
+# /model inline keyboard tests
+# ---------------------------------------------------------------------------
+
+
+async def test_cmd_model_no_arg_sends_card() -> None:
+    """When /model is called with no args, sends a Card with model selection buttons."""
+    engine, agent, platform = _make_engine()
+    agent.model = "gemini-2.5-flash"
+    from tg_gemini.models import ModelOption
+
+    agent.available_models.return_value = [
+        ModelOption(name="gemini-2.5-flash", desc="Gemini 2.5 Flash"),
+        ModelOption(name="gemini-2.5-pro", desc="Gemini 2.5 Pro"),
+    ]
+    msg = _make_message()
+    result = await engine.handle_command(msg, "/model")
+    assert result is True
+    platform.send_card.assert_called_once()
+
+
+async def test_cmd_model_no_arg_card_contains_all_buttons() -> None:
+    """The card sent by /model contains a button for each available model."""
+    engine, agent, platform = _make_engine()
+    agent.model = "gemini-2.5-flash"
+    from tg_gemini.models import ModelOption
+
+    models = [
+        ModelOption(name="gemini-2.5-flash", desc="Flash"),
+        ModelOption(name="gemini-2.5-pro", desc="Pro"),
+        ModelOption(name="gemini-3.1-pro-preview", desc="3.1 Pro"),
+    ]
+    agent.available_models.return_value = models
+    msg = _make_message()
+    await engine.handle_command(msg, "/model")
+
+    card = platform.send_card.call_args[0][1]
+    rows = card.collect_buttons()
+    # Flatten all buttons
+    buttons = [btn for row in rows for btn in row]
+    assert len(buttons) == 3
+    callback_datas = {btn.callback_data for btn in buttons}
+    assert "act:cmd:/model gemini-2.5-flash" in callback_datas
+    assert "act:cmd:/model gemini-2.5-pro" in callback_datas
+    assert "act:cmd:/model gemini-3.1-pro-preview" in callback_datas
+
+
+async def test_cmd_model_with_arg_sends_card() -> None:
+    """When /model is called with a model name argument, it sends the card too."""
+    engine, agent, platform = _make_engine()
+    from tg_gemini.models import ModelOption
+
+    agent.available_models.return_value = [
+        ModelOption(name="gemini-2.5-pro", desc="Pro"),
+        ModelOption(name="gemini-2.5-flash", desc="Flash"),
+    ]
+    msg = _make_message()
+    result = await engine.handle_command(msg, "/model gemini-2.5-pro")
+    assert result is True
+    platform.send_card.assert_called_once()
+
+
+async def test_cmd_model_no_reply_ctx_does_nothing() -> None:
+    """When /model has no reply_ctx, sending the card is skipped."""
+    engine, agent, platform = _make_engine()
+    agent.available_models.return_value = [MagicMock(name="flash")]
+    msg = _make_message()
+    msg.reply_ctx = None
+    result = await engine.handle_command(msg, "/model")
+    assert result is True
+    platform.send_card.assert_not_called()
+    platform.send.assert_not_called()
+
+
+async def test_handle_act_callback_model_sets_model() -> None:
+    """Clicking a model button in the card sets the model and re-renders the card."""
+    engine, agent, platform = _make_engine()
+    agent.available_models.return_value = [
+        MagicMock(name="gemini-2.5-flash", desc="Flash"),
+        MagicMock(name="gemini-2.5-pro", desc="Pro"),
+    ]
+    msg = _make_message()
+    ctx = msg.reply_ctx
+
+    # Simulate clicking the "gemini-2.5-pro" button
+    await engine._handle_act_callback(
+        "act:cmd:/model gemini-2.5-pro", "2", 1, ctx.message_id
+    )
+
+    assert agent.model == "gemini-2.5-pro"
+    platform.edit_card.assert_called_once()
+
+
+async def test_handle_act_callback_model_same_model_re_renders() -> None:
+    """Clicking the already-selected model still re-renders the card (no-op on model)."""
+    engine, agent, platform = _make_engine()
+    agent.model = "gemini-2.5-flash"
+    agent.available_models.return_value = [
+        MagicMock(name="gemini-2.5-flash", desc="Flash"),
+        MagicMock(name="gemini-2.5-pro", desc="Pro"),
+    ]
+    msg = _make_message()
+    ctx = msg.reply_ctx
+
+    # Clicking the current model should NOT change it
+    await engine._handle_act_callback(
+        "act:cmd:/model gemini-2.5-flash", "2", 1, ctx.message_id
+    )
+
+    assert agent.model == "gemini-2.5-flash"
+    platform.edit_card.assert_called_once()
+
+
+async def test_build_model_card_contains_current_model_in_title() -> None:
+    """_build_model_card title includes the current model name."""
+    engine, agent, _ = _make_engine()
+    agent.model = "gemini-2.5-flash"
+    agent.available_models.return_value = [
+        MagicMock(name="gemini-2.5-flash", desc="Flash")
+    ]
+
+    card = engine._build_model_card()
+    rendered = card.render_text()
+    assert "gemini-2.5-flash" in rendered
+
+
+async def test_build_model_card_with_default_model() -> None:
+    """_build_model_card with no model set shows '(default)' in title."""
+    engine, agent, _ = _make_engine()
+    agent.model = ""
+    agent.available_models.return_value = [
+        MagicMock(name="gemini-2.5-flash", desc="Flash")
+    ]
+
+    card = engine._build_model_card()
+    rendered = card.render_text()
+    assert "(default)" in rendered
+
+
+async def test_build_model_card_no_reply_ctx_returns_early() -> None:
+    """_build_model_card with no reply_ctx sends a plain text reply instead."""
+    engine, agent, platform = _make_engine()
+    agent.model = "flash"
+    agent.available_models.return_value = [MagicMock(name="flash", desc="Flash")]
+    msg = _make_message()
+    msg.reply_ctx = None
+
+    result = await engine.handle_command(msg, "/model")
+    assert result is True
+    platform.send.assert_not_called()
+    platform.send_card.assert_not_called()
