@@ -1,8 +1,11 @@
+import logging
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger(__name__)
 
 
 class EventType(StrEnum):
@@ -15,37 +18,34 @@ class EventType(StrEnum):
 
 
 class BaseEvent(BaseModel):
-    type: EventType
+    model_config = ConfigDict(populate_by_name=True)
+
+    type_: EventType = Field(default=EventType.INIT, validation_alias="type")
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
 class InitEvent(BaseEvent):
-    type: Literal[EventType.INIT] = EventType.INIT
     session_id: str
     model: str
 
 
 class MessageEvent(BaseEvent):
-    type: Literal[EventType.MESSAGE] = EventType.MESSAGE
     role: Literal["user", "assistant"]
     content: str
     delta: bool | None = None
 
 
 class ToolUseEvent(BaseEvent):
-    type: Literal[EventType.TOOL_USE] = EventType.TOOL_USE
     tool_name: str
     tool_id: str
     parameters: dict[str, Any]
 
 
 class ToolResultError(BaseModel):
-    type: str
     message: str
 
 
 class ToolResultEvent(BaseEvent):
-    type: Literal[EventType.TOOL_RESULT] = EventType.TOOL_RESULT
     tool_id: str
     status: Literal["success", "error"]
     output: str | None = None
@@ -53,7 +53,6 @@ class ToolResultEvent(BaseEvent):
 
 
 class ErrorEvent(BaseEvent):
-    type: Literal[EventType.ERROR] = EventType.ERROR
     severity: Literal["warning", "error"]
     message: str
 
@@ -63,7 +62,7 @@ class ModelStats(BaseModel):
     input_tokens: int
     output_tokens: int
     cached: int
-    input: int
+    _input: int
 
 
 class StreamStats(BaseModel):
@@ -71,14 +70,13 @@ class StreamStats(BaseModel):
     input_tokens: int
     output_tokens: int
     cached: int
-    input: int
+    _input: int
     duration_ms: int
     tool_calls: int
     models: dict[str, ModelStats]
 
 
 class ResultEvent(BaseEvent):
-    type: Literal[EventType.RESULT] = EventType.RESULT
     status: Literal["success", "error"]
     error: dict[str, Any] | None = None
     stats: StreamStats | None = None
@@ -89,6 +87,7 @@ GeminiEvent = InitEvent | MessageEvent | ToolUseEvent | ToolResultEvent | ErrorE
 
 def parse_event(data: dict[str, Any]) -> GeminiEvent:
     event_type = data.get("type")
+    logger.debug("Parsing event: %s", event_type)
     if event_type == EventType.INIT:
         return InitEvent.model_validate(data)
     if event_type == EventType.MESSAGE:
