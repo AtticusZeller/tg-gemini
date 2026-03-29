@@ -1,6 +1,10 @@
 import html
 import re
 
+import structlog
+
+logger = structlog.get_logger()
+
 
 def md_to_telegram_html(text: str) -> str:
     """Convert Markdown to a subset of HTML supported by Telegram.
@@ -18,6 +22,8 @@ def md_to_telegram_html(text: str) -> str:
     """
     if not text:
         return ""
+
+    logger.debug("md_convert_start", input_len=len(text))
 
     # Phase 1: Extract and protect code blocks
     code_blocks: list[str] = []
@@ -103,6 +109,7 @@ def md_to_telegram_html(text: str) -> str:
     for i, code in enumerate(inline_codes):
         text = text.replace(f"\x00IC{i}\x00", code)
 
+    logger.debug("md_convert_done", input_len=len(text), output_len=len(text))
     return text
 
 
@@ -115,6 +122,7 @@ def split_message_code_fence_aware(text: str, max_len: int = 4096) -> list[str]:
     if len(text) <= max_len:
         return [text]
 
+    logger.debug("split_message_start", len=len(text), max_len=max_len)
     chunks = []
     while True:
         if len(text) <= max_len:
@@ -148,4 +156,5 @@ def split_message_code_fence_aware(text: str, max_len: int = 4096) -> list[str]:
         chunks.append(chunk)
         text = remaining.strip("\n")  # Strip leading newline for next chunk
 
+    logger.debug("split_message_done", num_chunks=len(chunks))
     return chunks

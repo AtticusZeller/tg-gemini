@@ -4,6 +4,7 @@ import html as html_mod
 import time
 from dataclasses import dataclass, field
 
+import structlog
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, Message
@@ -20,6 +21,8 @@ from tg_gemini.events import (
 )
 from tg_gemini.gemini import GeminiAgent, SessionInfo
 from tg_gemini.markdown import md_to_telegram_html, split_message_code_fence_aware
+
+logger = structlog.get_logger()
 
 TELEGRAM_MAX_LENGTH = 4096
 UPDATE_INTERVAL = 1.5
@@ -46,7 +49,10 @@ class SessionManager:
 
     def get(self, user_id: int) -> UserSession:
         if user_id not in self._sessions:
+            logger.debug("session_created", user_id=user_id)
             self._sessions[user_id] = UserSession()
+        else:
+            logger.debug("session_retrieved", user_id=user_id)
         return self._sessions[user_id]
 
 
@@ -61,6 +67,7 @@ router = Router()
 async def cmd_start(message: Message, sessions: SessionManager) -> None:
     if not message.from_user:
         return
+    logger.info("command_start", user_id=message.from_user.id)
     session = sessions.get(message.from_user.id)
     session.active = True
     await message.answer(
@@ -81,6 +88,7 @@ async def cmd_start(message: Message, sessions: SessionManager) -> None:
 async def cmd_new(message: Message, command: CommandObject, sessions: SessionManager) -> None:
     if not message.from_user:
         return
+    logger.info("command_new", user_id=message.from_user.id, args=command.args)
     session = sessions.get(message.from_user.id)
     session.session_id = None
     session.pending_name = command.args or None
@@ -109,6 +117,7 @@ async def _format_session_list(
 async def cmd_list(message: Message, sessions: SessionManager, agent: GeminiAgent) -> None:
     if not message.from_user:
         return
+    logger.info("command_list", user_id=message.from_user.id)
     session = sessions.get(message.from_user.id)
     session.last_sessions = await agent.list_sessions()
     text = await _format_session_list(
@@ -130,6 +139,7 @@ def _resolve_id(arg: str, last_sessions: list[SessionInfo]) -> str:
 async def cmd_name(message: Message, command: CommandObject, sessions: SessionManager) -> None:
     if not message.from_user:
         return
+    logger.info("command_name", user_id=message.from_user.id, args=command.args)
     session = sessions.get(message.from_user.id)
     if not session.session_id:
         await message.answer("No active session to name. Send a message first.")
@@ -146,6 +156,7 @@ async def cmd_name(message: Message, command: CommandObject, sessions: SessionMa
 async def cmd_resume(message: Message, command: CommandObject, sessions: SessionManager) -> None:
     if not message.from_user:
         return
+    logger.info("command_resume", user_id=message.from_user.id, args=command.args)
     session = sessions.get(message.from_user.id)
     if command.args:
         target_id = _resolve_id(command.args, session.last_sessions)
@@ -162,6 +173,7 @@ async def cmd_delete(
 ) -> None:
     if not message.from_user:
         return
+    logger.info("command_delete", user_id=message.from_user.id, args=command.args)
     if not command.args:
         await message.answer("Usage: /delete <index|id>")
         return
@@ -183,6 +195,7 @@ async def cmd_delete(
 async def cmd_model(message: Message, command: CommandObject, sessions: SessionManager) -> None:
     if not message.from_user:
         return
+    logger.info("command_model", user_id=message.from_user.id, args=command.args)
     if not command.args:
         aliases = ", ".join(sorted(MODEL_ALIASES.keys()))
         await message.answer(f"Usage: /model <name>\nAliases: {aliases}")
@@ -196,6 +209,7 @@ async def cmd_model(message: Message, command: CommandObject, sessions: SessionM
 async def cmd_status(message: Message, sessions: SessionManager, config: AppConfig) -> None:
     if not message.from_user:
         return
+    logger.info("command_status", user_id=message.from_user.id)
     session = sessions.get(message.from_user.id)
     status = (
         f"Active: {session.active}\n"
@@ -209,6 +223,7 @@ async def cmd_status(message: Message, sessions: SessionManager, config: AppConf
 async def cmd_current(message: Message, sessions: SessionManager, config: AppConfig) -> None:
     if not message.from_user:
         return
+    logger.info("command_current", user_id=message.from_user.id)
     session = sessions.get(message.from_user.id)
     current = (
         f"Current Model: <code>{session.model or config.gemini.model}</code>\n"
@@ -332,6 +347,7 @@ async def _handle_event(
 ) -> None:
     """Process a single stream event, updating state and UI."""
     if isinstance(event, InitEvent):
+        logger.debug("stream_init", session_id=event.session_id, model=event.model)
         session.session_id = event.session_id
         if session.pending_name and event.session_id:
             session.custom_names[event.session_id] = session.pending_name
@@ -342,22 +358,31 @@ async def _handle_event(
             reply, state.accumulated, state.last_update_time, state.last_update_len
         )
     elif isinstance(event, ToolUseEvent):
+        logger.debug("stream_tool_use", tool_name=event.tool_name, tool_id=event.tool_id)
         tool_html = _format_tool_html(event)
         tool_msg = await reply.answer(tool_html, parse_mode="HTML")
         state.tool_messages[event.tool_id] = tool_msg
         state.tool_html[event.tool_id] = tool_html
     elif isinstance(event, ToolResultEvent) and event.tool_id in state.tool_messages:
+        logger.debug("stream_tool_result", tool_id=event.tool_id, status=event.status)
         tool_msg = state.tool_messages[event.tool_id]
         icon = "✅" if event.status == "success" else "❌"
         new_html = state.tool_html[event.tool_id].replace("🔧", icon, 1)
         with contextlib.suppress(Exception):
             await tool_msg.edit_text(new_html, parse_mode="HTML")
     elif isinstance(event, ErrorEvent):
+        logger.error("stream_error", severity=event.severity, message=event.message)
         await reply.edit_text(f"Error: {event.message}")
         state.aborted = True
     elif isinstance(event, ResultEvent) and event.stats:
         s = event.stats
         state.stats_footer = f"({s.total_tokens} tokens, {s.duration_ms / 1000:.1f}s)"
+        logger.info(
+            "stream_result",
+            status=event.status,
+            total_tokens=s.total_tokens,
+            duration_s=s.duration_ms / 1000,
+        )
 
 
 async def _process_stream(
@@ -366,6 +391,7 @@ async def _process_stream(
     if not message.bot:
         return "", []
 
+    logger.info("stream_started", user_id=message.from_user.id if message.from_user else None)
     reply = await message.answer("Thinking...")
     state = _StreamState(last_update_time=time.monotonic())
 
@@ -381,11 +407,14 @@ async def _process_stream(
             # so it appears AFTER tool messages in correct order
             with contextlib.suppress(Exception):
                 await reply.delete()
+            logger.debug("stream_ending_with_tools", num_tool_msgs=len(state.tool_messages))
             await _send_new(reply, state.accumulated)
         else:
             # No tools: edit "Thinking..." in place (clean Q&A flow)
+            logger.debug("stream_ending_no_tools", response_len=len(state.accumulated))
             await _send_final(reply, state.accumulated)
     elif not state.tool_messages:
+        logger.debug("stream_no_response")
         await reply.edit_text("No response.")
 
     if state.stats_footer:
@@ -469,4 +498,5 @@ async def start_bot(config: AppConfig) -> None:
     sessions = SessionManager()
     agent = GeminiAgent(config.gemini)
 
+    logger.info("bot_polling_started")
     await dp.start_polling(bot, sessions=sessions, agent=agent, config=config)

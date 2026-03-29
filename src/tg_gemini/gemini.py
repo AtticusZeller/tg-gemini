@@ -4,8 +4,12 @@ import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+import structlog
+
 from tg_gemini.config import GeminiConfig
 from tg_gemini.events import ErrorEvent, GeminiEvent, parse_event
+
+logger = structlog.get_logger()
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,7 @@ class GeminiAgent:
         self, prompt: str, session_id: str | None = None, model: str | None = None
     ) -> AsyncIterator[GeminiEvent]:
         args = self._build_args(prompt, session_id, model)
+        logger.debug("gemini_cli_exec", command=" ".join(args))
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -54,6 +59,7 @@ class GeminiAgent:
                 cwd=self.config.working_dir,
             )
         except FileNotFoundError:
+            logger.exception("gemini_cli_not_found")
             yield ErrorEvent(severity="error", message="gemini CLI not found in PATH")
             return
 
@@ -70,6 +76,7 @@ class GeminiAgent:
 
         if proc.returncode != 0:
             stderr = (await proc.stderr.read()).decode().strip() if proc.stderr else ""
+            logger.error("gemini_cli_exit", returncode=proc.returncode, stderr=stderr)
             yield ErrorEvent(
                 severity="error", message=f"gemini exited with code {proc.returncode}. {stderr}"
             )
@@ -81,11 +88,13 @@ class GeminiAgent:
         try:
             data = json.loads(line)
             return parse_event(data)
-        except (json.JSONDecodeError, KeyError, ValueError):
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.debug("gemini_parse_error", line=line, error=str(e))
             return None
 
     async def list_sessions(self) -> list[SessionInfo]:
         """List available sessions for the project."""
+        logger.debug("list_sessions_start")
         try:
             proc = await asyncio.create_subprocess_exec(
                 "gemini",
@@ -118,8 +127,11 @@ class GeminiAgent:
                     )
             return sessions
 
+        logger.debug("list_sessions_done", count=len(sessions))
+
     async def delete_session(self, session_id_or_index: str) -> bool:
         """Delete a session by ID or index."""
+        logger.info("delete_session", session_id=session_id_or_index)
         try:
             proc = await asyncio.create_subprocess_exec(
                 "gemini",
@@ -133,4 +145,5 @@ class GeminiAgent:
         except FileNotFoundError:
             return False
         else:
+            logger.debug("delete_session_done", success=proc.returncode == 0, returncode=proc.returncode)
             return proc.returncode == 0
