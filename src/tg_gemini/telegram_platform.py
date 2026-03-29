@@ -8,7 +8,7 @@ from typing import Any
 from loguru import logger
 from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -375,6 +375,12 @@ class TelegramPlatform:
         except BadRequest as exc:
             if "message is not modified" not in str(exc).lower():
                 raise
+        except RetryAfter as exc:
+            logger.warning(
+                "TelegramPlatform: rate limited, retry after",
+                retry_after=exc.retry_after,
+            )
+            # Don't raise - the preview will be cleaned up by finish() and reply() will be used
 
     async def delete_preview(self, handle: PreviewHandle) -> None:
         """Delete a preview message."""

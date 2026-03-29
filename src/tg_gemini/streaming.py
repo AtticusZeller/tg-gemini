@@ -50,10 +50,14 @@ class StreamPreview:
 
     async def append_text(self, text: str) -> None:
         """Accumulate text and trigger a throttled preview flush."""
-        if not self._cfg.enabled or self._degraded:
+        if not self._cfg.enabled:
             return
         async with self._lock:
             self._full_text += text
+            # When degraded, accumulate text but don't send previews;
+            # finish() will use reply() as fallback
+            if self._degraded:
+                return
             display = self._trimmed_text(self._full_text)
             delta = len(display) - len(self._last_sent_text)
             elapsed_ms = (time.monotonic() - self._last_sent_at) * 1000
