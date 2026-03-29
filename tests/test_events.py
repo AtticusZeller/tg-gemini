@@ -24,6 +24,43 @@ from tg_gemini.events import (
     parse_event,
 )
 
+# Minimum session ID length for testing
+_MIN_SESSION_ID_LENGTH = 20
+
+# Test file paths
+_TEST_WRITE_FILE_PATH = "/tmp/output.json"  # noqa: S108
+
+# Nested parameter test values
+_NESTED_DEEP_VALUE = 42
+
+# Stats test values for result events
+_STATS_TOTAL_TOKENS = 1500
+_STATS_INPUT_TOKENS = 800
+_STATS_OUTPUT_TOKENS = 700
+_STATS_CACHED = 200
+_STATS_DURATION_MS = 2500
+_STATS_TOOL_CALLS = 3
+
+# Stats test values for model stats
+_MODEL_STATS_TOTAL = 100
+_MODEL_STATS_INPUT = 50
+_MODEL_STATS_OUTPUT = 50
+_MODEL_STATS_CACHED = 10
+
+# Stats test values for stream stats
+_STREAM_STATS_TOTAL = 1000
+_STREAM_STATS_DURATION_MS = 3000
+_STREAM_STATS_TOOL_CALLS = 2
+
+# JSONL sequence event counts
+_FULL_CONVERSATION_EVENT_COUNT = 7
+_LOOP_DETECTION_EVENT_COUNT = 4
+_MAX_TURNS_EVENT_COUNT = 4
+_MULTI_CHUNK_MESSAGE_DELTA_COUNT = 4
+
+# Model count in multi-model test
+_MULTIPLE_MODELS_COUNT = 2
+
 
 class TestParseInitEvent:
     """Init event tests based on real gemini-cli output."""
@@ -50,7 +87,7 @@ class TestParseInitEvent:
         }
         event = parse_event(data)
         assert isinstance(event, InitEvent)
-        assert len(event.session_id) > 20
+        assert len(event.session_id) > _MIN_SESSION_ID_LENGTH
 
 
 class TestParseMessageEvent:
@@ -194,10 +231,7 @@ class TestParseToolUseEvent:
             "timestamp": "2026-03-15T10:00:00Z",
             "tool_name": "write_file",
             "tool_id": "tool-write-789",
-            "parameters": {
-                "path": "/tmp/output.json",
-                "content": '{"key": "value"}',
-            },
+            "parameters": {"path": _TEST_WRITE_FILE_PATH, "content": '{"key": "value"}'},
         }
         event = parse_event(data)
         assert isinstance(event, ToolUseEvent)
@@ -223,15 +257,11 @@ class TestParseToolUseEvent:
             "timestamp": "2026-03-15T10:00:00Z",
             "tool_name": "multi_tool",
             "tool_id": "tool-complex",
-            "parameters": {
-                "nested": {"deep": {"value": 42}},
-                "list": [1, 2, 3],
-                "flag": True,
-            },
+            "parameters": {"nested": {"deep": {"value": 42}}, "list": [1, 2, 3], "flag": True},
         }
         event = parse_event(data)
         assert isinstance(event, ToolUseEvent)
-        assert event.parameters["nested"]["deep"]["value"] == 42
+        assert event.parameters["nested"]["deep"]["value"] == _NESTED_DEEP_VALUE
         assert event.parameters["list"] == [1, 2, 3]
         assert event.parameters["flag"] is True
 
@@ -383,20 +413,16 @@ class TestParseResultEvent:
         assert isinstance(event, ResultEvent)
         assert event.status == "success"
         assert event.stats is not None
-        assert event.stats.total_tokens == 1500
-        assert event.stats.input_tokens == 800
-        assert event.stats.output_tokens == 700
-        assert event.stats.cached == 200
-        assert event.stats.duration_ms == 2500
-        assert event.stats.tool_calls == 3
+        assert event.stats.total_tokens == _STATS_TOTAL_TOKENS
+        assert event.stats.input_tokens == _STATS_INPUT_TOKENS
+        assert event.stats.output_tokens == _STATS_OUTPUT_TOKENS
+        assert event.stats.cached == _STATS_CACHED
+        assert event.stats.duration_ms == _STATS_DURATION_MS
+        assert event.stats.tool_calls == _STATS_TOOL_CALLS
 
     def test_parse_result_success_no_stats(self) -> None:
         """Result may omit stats field."""
-        data = {
-            "type": "result",
-            "timestamp": "2026-03-15T10:00:00Z",
-            "status": "success",
-        }
+        data = {"type": "result", "timestamp": "2026-03-15T10:00:00Z", "status": "success"}
         event = parse_event(data)
         assert isinstance(event, ResultEvent)
         assert event.status == "success"
@@ -473,7 +499,7 @@ class TestParseResultEvent:
         event = parse_event(data)
         assert isinstance(event, ResultEvent)
         assert event.stats is not None
-        assert len(event.stats.models) == 2
+        assert len(event.stats.models) == _MULTIPLE_MODELS_COUNT
         assert "gemini-2.5-flash" in event.stats.models
         assert "claude-3-5-sonnet" in event.stats.models
 
@@ -521,16 +547,12 @@ class TestModelStats:
 
     def test_model_stats_all_fields(self) -> None:
         stats = ModelStats(
-            total_tokens=100,
-            input_tokens=50,
-            output_tokens=50,
-            cached=10,
-            _input=50,
+            total_tokens=100, input_tokens=50, output_tokens=50, cached=10, _input=50
         )
-        assert stats.total_tokens == 100
-        assert stats.input_tokens == 50
-        assert stats.output_tokens == 50
-        assert stats.cached == 10
+        assert stats.total_tokens == _MODEL_STATS_TOTAL
+        assert stats.input_tokens == _MODEL_STATS_INPUT
+        assert stats.output_tokens == _MODEL_STATS_OUTPUT
+        assert stats.cached == _MODEL_STATS_CACHED
 
 
 class TestStreamStats:
@@ -547,9 +569,9 @@ class TestStreamStats:
             tool_calls=2,
             models={},
         )
-        assert stats.total_tokens == 1000
-        assert stats.duration_ms == 3000
-        assert stats.tool_calls == 2
+        assert stats.total_tokens == _STREAM_STATS_TOTAL
+        assert stats.duration_ms == _STREAM_STATS_DURATION_MS
+        assert stats.tool_calls == _STREAM_STATS_TOOL_CALLS
 
 
 class TestRealWorldJsonlSequence:
@@ -621,7 +643,7 @@ class TestRealWorldJsonlSequence:
 
         events = [parse_event(line) for line in jsonl_lines]
 
-        assert len(events) == 7
+        assert len(events) == _FULL_CONVERSATION_EVENT_COUNT
         assert isinstance(events[0], InitEvent)
         assert isinstance(events[1], MessageEvent)
         assert events[1].role == "user"
@@ -674,7 +696,7 @@ class TestRealWorldJsonlSequence:
 
         events = [parse_event(line) for line in jsonl_lines]
 
-        assert len(events) == 4
+        assert len(events) == _LOOP_DETECTION_EVENT_COUNT
         assert isinstance(events[2], ErrorEvent)
         assert events[2].severity == "warning"
         assert "Loop detected" in events[2].message
@@ -719,7 +741,7 @@ class TestRealWorldJsonlSequence:
 
         events = [parse_event(line) for line in jsonl_lines]
 
-        assert len(events) == 4
+        assert len(events) == _MAX_TURNS_EVENT_COUNT
         assert isinstance(events[2], ErrorEvent)
         assert events[2].severity == "error"
         assert "Maximum" in events[2].message
@@ -786,9 +808,9 @@ class TestRealWorldJsonlSequence:
 
         events = [parse_event(line) for line in jsonl_lines]
 
-        assert len(events) == 7
+        assert len(events) == _FULL_CONVERSATION_EVENT_COUNT
         delta_events = [e for e in events if isinstance(e, MessageEvent) and e.delta]
-        assert len(delta_events) == 4
+        assert len(delta_events) == _MULTI_CHUNK_MESSAGE_DELTA_COUNT
 
         # Verify chunks accumulate in order
         assert delta_events[0].content == "Here "
