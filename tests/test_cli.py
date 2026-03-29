@@ -100,7 +100,7 @@ def test_start_creates_data_dir(tmp_path: Path) -> None:
     data_dir = tmp_path / "data" / "tg-gemini"
     # Root-level keys in TOML must come before any [section] header
     config_file.write_text(
-        f'data_dir = "{data_dir}"\n\n[telegram]\ntoken = "123:ABC"\n\n[gemini]\n'
+        f'data_dir = "{data_dir.as_posix()}"\n\n[telegram]\ntoken = "123:ABC"\n\n[gemini]\n'
     )
 
     # Patch Engine so asyncio.run can actually run (but start() does nothing)
@@ -120,8 +120,8 @@ def test_start_passes_extra_skill_dirs_from_config(tmp_path: Path) -> None:
 
     config_file = tmp_path / "config.toml"
     config_file.write_text(
-        f'[telegram]\ntoken = "123:ABC"\n\n[gemini]\nwork_dir = "{tmp_path}"\n'
-        f'\n[skills]\ndirs = ["{extra_skills}"]\n'
+        f'[telegram]\ntoken = "123:ABC"\n\n[gemini]\nwork_dir = "{tmp_path.as_posix()}"\n'
+        f'\n[skills]\ndirs = ["{extra_skills.as_posix()}"]\n'
     )
 
     captured_skill_dirs: list[Path] | None = None
@@ -151,7 +151,7 @@ def test_start_passes_empty_skill_dirs_when_no_config(tmp_path: Path) -> None:
     """start passes empty skill_dirs when [skills] not in config (auto-load handled by Engine)."""
     config_file = tmp_path / "config.toml"
     config_file.write_text(
-        f'[telegram]\ntoken = "123:ABC"\n\n[gemini]\nwork_dir = "{tmp_path}"\n'
+        f'[telegram]\ntoken = "123:ABC"\n\n[gemini]\nwork_dir = "{tmp_path.as_posix()}"\n'
     )
 
     captured_skill_dirs: list[Path] | None = None
