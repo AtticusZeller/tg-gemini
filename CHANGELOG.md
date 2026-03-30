@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.23 - 2026-03-30
+
+### 🚀 Features
+
+- *(agent)* Add Claude Code as second agent
+
 ## 0.0.22 - 2026-03-30
 
 ### 🐛 Bug Fixes
