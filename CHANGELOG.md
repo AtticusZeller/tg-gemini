@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.19 - 2026-03-30
+
+### 🐛 Bug Fixes
+
+- *(gemini)* Handle LimitOverrunError from large JSONL lines
+
 ## 0.0.18 - 2026-03-30
 
 ### 🐛 Bug Fixes
