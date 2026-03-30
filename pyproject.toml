@@ -73,7 +73,12 @@ python-version = "3.12"
 [tool.pytest.ini_options]
 addopts        = "-rXs --strict-config --strict-markers --tb=short"
 xfail_strict   = true
-filterwarnings = ["error", "ignore::ResourceWarning"]
+filterwarnings = [
+    "error",
+    "ignore::ResourceWarning",
+    # Coverage tracer + AsyncMock produces false-positive unawaited coroutine warnings
+    "ignore:coroutine.*AsyncMockMixin.*never awaited:RuntimeWarning",
+]
 pythonpath     = "src"
 asyncio_mode   = "auto"
 

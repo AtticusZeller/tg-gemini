@@ -2034,3 +2034,211 @@ async def test_build_model_card_no_reply_ctx_returns_early() -> None:
     assert result is True
     platform.send.assert_not_called()
     platform.send_card.assert_not_called()
+
+
+# ── Claude agent integration ─────────────────────────────────────────────
+
+
+def _make_engine_with_claude() -> tuple[Engine, MagicMock, MagicMock, MagicMock]:
+    """Create engine with both Gemini and Claude agents."""
+    from tg_gemini.claude import ClaudeAgent
+
+    cfg = _make_config()
+    agent = MagicMock(spec=GeminiAgent)
+    agent.model = ""
+    agent.mode = "default"
+    agent.available_models.return_value = []
+    claude = MagicMock(spec=ClaudeAgent)
+    claude.model = "sonnet"
+    claude.mode = "default"
+    claude.available_models.return_value = [
+        {"name": "sonnet", "desc": "Claude Sonnet 4"},
+        {"name": "opus", "desc": "Claude Opus 4"},
+    ]
+    platform = MagicMock()
+    platform.start = AsyncMock()
+    platform.stop = AsyncMock()
+    platform.send = AsyncMock()
+    platform.reply = AsyncMock()
+    platform.send_preview_start = AsyncMock(return_value=MagicMock())
+    platform.update_message = AsyncMock()
+    platform.delete_preview = AsyncMock()
+    platform.start_typing = AsyncMock(
+        return_value=asyncio.create_task(asyncio.sleep(0))
+    )
+    platform.send_card = AsyncMock(return_value=42)
+    platform.edit_card = AsyncMock()
+    platform.send_with_buttons = AsyncMock()
+    platform.register_callback_prefix = MagicMock()
+    sessions = SessionManager()
+    i18n = I18n(lang=Language.EN)
+    engine = Engine(
+        config=cfg,
+        agent=agent,
+        platform=platform,
+        sessions=sessions,
+        i18n=i18n,
+        claude_agent=claude,
+    )
+    return engine, agent, claude, platform
+
+
+async def test_cmd_agent_switch_to_claude() -> None:
+    """/agent claude switches session to claude."""
+    engine, _agent, _claude, platform = _make_engine_with_claude()
+    msg = _make_message(content="/agent claude")
+    engine._sessions.get_or_create(msg.session_key)
+    await engine.handle_message(msg)
+    session = engine._sessions.get(msg.session_key)
+    assert session.agent_type == "claude"
+
+
+async def test_cmd_agent_switch_to_gemini() -> None:
+    """/agent gemini switches session to gemini."""
+    engine, _agent, _claude, platform = _make_engine_with_claude()
+    msg = _make_message(content="/agent gemini")
+    engine._sessions.get_or_create(msg.session_key)
+    # First switch to claude
+    await engine.handle_command(msg, "/agent claude")
+    # Then switch back
+    await engine.handle_command(msg, "/agent gemini")
+    session = engine._sessions.get(msg.session_key)
+    assert session.agent_type == "gemini"
+
+
+async def test_cmd_agent_show_current() -> None:
+    """/agent with no args shows current agent."""
+    engine, _agent, _claude, platform = _make_engine_with_claude()
+    msg = _make_message(content="/agent")
+    await engine.handle_message(msg)
+    platform.send.assert_called()
+
+
+async def test_cmd_agent_claude_not_configured() -> None:
+    """/agent claude when Claude not configured shows error."""
+    engine, _agent, platform = _make_engine()
+    msg = _make_message(content="/agent claude")
+    await engine.handle_message(msg)
+    # Should report Claude not configured
+    sent_calls = [str(c) for c in platform.send.call_args_list]
+    assert any("not configured" in c.lower() or "Claude" in c for c in sent_calls)
+
+
+async def test_cmd_agent_invalid_args() -> None:
+    """/agent invalid shows current agent info."""
+    engine, _agent, _claude, platform = _make_engine_with_claude()
+    msg = _make_message(content="/agent invalid")
+    await engine.handle_message(msg)
+    platform.send.assert_called()
+
+
+async def test_build_model_card_claude() -> None:
+    """_build_model_card with claude agent shows Claude models."""
+    engine, _agent, claude, _platform = _make_engine_with_claude()
+    card = engine._build_model_card(agent_type="claude")
+    rendered = card.render_text()
+    assert "Claude" in rendered or "sonnet" in rendered.lower()
+
+
+async def test_cmd_mode_with_claude() -> None:
+    """/mode with claude session shows claude mode."""
+    engine, _agent, claude, platform = _make_engine_with_claude()
+    claude.mode = "bypassPermissions"
+    msg = _make_message(content="/agent claude")
+    await engine.handle_message(msg)
+    msg2 = _make_message(content="/mode")
+    await engine.handle_message(msg2)
+    # Should show current mode
+    sent_calls = [str(c) for c in platform.send.call_args_list]
+    assert any("bypassPermissions" in c or "default" in c for c in sent_calls)
+
+
+async def test_handle_perm_callback_allow() -> None:
+    """Permission callback 'allow' responds to Claude session."""
+    engine, _agent, claude, platform = _make_engine_with_claude()
+
+    # Set up a pending permission
+    from tg_gemini.engine import _PendingPermission
+
+    ctx = ReplyContext(chat_id=1, message_id=10)
+    engine._pending_permissions["req-1"] = _PendingPermission(
+        request_id="req-1",
+        tool_name="Bash",
+        tool_input="ls",
+        ctx=ctx,
+    )
+
+    # Set up a mock Claude session
+    mock_session = AsyncMock()
+    engine._active_claude["telegram:1:2"] = mock_session
+
+    await engine._handle_perm_callback("perm:req-1:allow", "2", 1, 10)
+    mock_session.respond_permission.assert_called_once_with("req-1", True)
+    assert "req-1" not in engine._pending_permissions
+
+
+async def test_handle_perm_callback_deny() -> None:
+    """Permission callback 'deny' responds to Claude session."""
+    engine, _agent, claude, platform = _make_engine_with_claude()
+
+    from tg_gemini.engine import _PendingPermission
+
+    ctx = ReplyContext(chat_id=1, message_id=10)
+    engine._pending_permissions["req-2"] = _PendingPermission(
+        request_id="req-2",
+        tool_name="Edit",
+        tool_input="file.py",
+        ctx=ctx,
+    )
+    mock_session = AsyncMock()
+    engine._active_claude["telegram:1:2"] = mock_session
+
+    await engine._handle_perm_callback("perm:req-2:deny", "2", 1, 10)
+    mock_session.respond_permission.assert_called_once_with("req-2", False)
+
+
+async def test_handle_perm_callback_not_found() -> None:
+    """Permission callback with unknown request_id is silently ignored."""
+    engine, _agent, claude, platform = _make_engine_with_claude()
+    # No pending permissions set
+    await engine._handle_perm_callback("perm:req-unknown:allow", "2", 1, 10)
+    platform.send.assert_not_called()
+
+
+async def test_handle_perm_callback_no_claude_session() -> None:
+    """Permission callback when no active Claude session shows error."""
+    engine, _agent, claude, platform = _make_engine_with_claude()
+
+    from tg_gemini.engine import _PendingPermission
+
+    ctx = ReplyContext(chat_id=1, message_id=10)
+    engine._pending_permissions["req-3"] = _PendingPermission(
+        request_id="req-3",
+        tool_name="Bash",
+        tool_input="rm",
+        ctx=ctx,
+    )
+    # No active claude session
+    await engine._handle_perm_callback("perm:req-3:allow", "2", 1, 10)
+    sent_calls = [str(c) for c in platform.send.call_args_list]
+    assert any("No active Claude" in c for c in sent_calls)
+
+
+async def test_cmd_model_with_claude() -> None:
+    """/model with claude session shows claude models."""
+    engine, _agent, claude, platform = _make_engine_with_claude()
+    msg = _make_message(content="/agent claude")
+    await engine.handle_message(msg)
+    msg2 = _make_message(content="/model")
+    await engine.handle_message(msg2)
+    platform.send_card.assert_called()
+
+
+async def test_cmd_model_switch_claude() -> None:
+    """/model sonnet with claude session sets claude model."""
+    engine, _agent, claude, platform = _make_engine_with_claude()
+    msg = _make_message(content="/agent claude")
+    await engine.handle_message(msg)
+    msg2 = _make_message(content="/model sonnet")
+    await engine.handle_message(msg2)
+    assert claude.model == "sonnet"
