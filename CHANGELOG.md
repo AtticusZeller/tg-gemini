@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.21 - 2026-03-30
+
+### 🐛 Bug Fixes
+
+- *(gemini)* Handle LimitOverrunError in stdout readline and prevent deadlocks
+
 ## 0.0.20 - 2026-03-30
 
 ### 🐛 Bug Fixes
