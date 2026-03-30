@@ -881,6 +881,7 @@ class Engine:
             ("status", "Show status"),
             ("model", "Show/switch model"),
             ("mode", "Show/switch mode"),
+            ("agent", "Switch agent (gemini/claude)"),
             ("lang", "Switch language"),
             ("quiet", "Toggle quiet mode"),
             ("stop", "Stop agent"),
