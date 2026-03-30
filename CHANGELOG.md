@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.22 - 2026-03-30
+
+### 🐛 Bug Fixes
+
+- *(gemini)* Strip [Thought:] prefix so thinking steps appear as separate messages
+
 ## 0.0.21 - 2026-03-30
 
 ### 🐛 Bug Fixes
