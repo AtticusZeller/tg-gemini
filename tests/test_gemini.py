@@ -1279,3 +1279,51 @@ async def test_read_loop_stderr_multiline_on_error() -> None:
     assert "Error: line 1" in err_str
     assert "Error: line 2" in err_str
     assert "Error: line 3" in err_str
+
+
+async def test_stream_stdout_handles_line_too_long() -> None:
+    """Regression: ValueError from LimitOverrunError in StreamReader should be caught.
+
+    When a JSONL line exceeds the StreamReader limit, readline() raises
+    LimitOverrunError which is re-raised as ValueError. Without the catch,
+    this crashes the _read_loop and the whole session hangs until timeout.
+    """
+    session = _make_session()
+
+    class _OverrunStream:
+        """Simulates a StreamReader that raises ValueError on iteration."""
+
+        def __aiter__(self) -> Self:
+            return self
+
+        async def __anext__(self) -> bytes:
+            raise ValueError("Separator is not found, and chunk exceed the limit")
+
+    await session._stream_stdout(_OverrunStream())
+    # Should not raise — the ValueError is caught and logged
+
+
+async def test_read_loop_with_limit_overrun() -> None:
+    """Full _read_loop should survive a LimitOverrunError from stdout."""
+    session = _make_session()
+
+    # Build a proc whose stdout immediately raises ValueError
+    class _OverrunStream:
+        def __aiter__(self) -> Self:
+            return self
+
+        async def __anext__(self) -> bytes:
+            raise ValueError("Separator is not found, and chunk exceed the limit")
+
+    proc = AsyncMock()
+    proc.stdout = _OverrunStream()
+    proc.stderr = _AsyncBytesStream([])
+    proc.wait = AsyncMock(return_value=0)
+    proc.returncode = 0
+
+    await session._read_loop(proc)
+
+    # _read_loop should complete without hanging or crashing
+    events = _drain(session)
+    # No events produced (stdout failed), but no crash either
+    assert all(e.type != EventType.ERROR for e in events)

@@ -289,6 +289,8 @@ class GeminiSession:
 
         logger.debug("GeminiSession: launching", args=args[:5])
 
+        # limit=10 MiB: Gemini tool_result JSON lines can be very large;
+        # the default 64 KiB StreamReader limit causes LimitOverrunError.
         proc = await asyncio.create_subprocess_exec(
             self._cmd,
             *args,
@@ -296,6 +298,7 @@ class GeminiSession:
             stderr=asyncio.subprocess.PIPE,
             cwd=self._work_dir,
             env=env,
+            limit=10 * 1024 * 1024,
         )
         self._proc = proc
 
@@ -362,12 +365,16 @@ class GeminiSession:
 
     async def _stream_stdout(self, stdout: asyncio.StreamReader) -> None:
         """Read and parse JSONL lines from stdout."""
-        async for line_bytes in stdout:
-            line = line_bytes.decode(errors="replace").rstrip()
-            if not line:
-                continue
-            logger.debug("GeminiSession: raw line", line=line[:200])
-            self._parse_line(line)
+        try:
+            async for line_bytes in stdout:
+                line = line_bytes.decode(errors="replace").rstrip()
+                if not line:
+                    continue
+                logger.debug("GeminiSession: raw line", line=line[:200])
+                self._parse_line(line)
+        except ValueError as exc:
+            # LimitOverrunError is wrapped as ValueError by StreamReader.readline
+            logger.error("GeminiSession: stdout line too long", error=exc)
 
     def _parse_line(self, line: str) -> None:
         """Parse a JSONL line, extracting all JSON objects from it."""
