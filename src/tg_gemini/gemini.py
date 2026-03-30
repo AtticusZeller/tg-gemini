@@ -66,7 +66,7 @@ def _format_tool_params(tool_name: str, params: dict[str, Any]) -> str:
     match tool_name:
         case "shell" | "run_shell_command" | "Bash":
             if cmd := params.get("command"):
-                return str(cmd)
+                return f"```bash\n{cmd}\n```"
         case "write_file" | "WriteFile":
             fp = params.get("file_path") or params.get("path", "")
             if fp:
@@ -306,8 +306,7 @@ class GeminiSession:
         self._read_task.add_done_callback(
             lambda t: (
                 logger.error("GeminiSession: read loop crashed", exc_info=t.exception())
-                if t.exception()
-                and not isinstance(t.exception(), asyncio.CancelledError)
+                if not t.cancelled() and t.exception()
                 else None
             )
         )

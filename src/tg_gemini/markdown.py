@@ -147,6 +147,9 @@ def markdown_to_html(md: str) -> str:
     Returns:
         HTML string suitable for Telegram.
     """
+    # Normalize HTML line breaks from LLM output to actual newlines
+    md = re.sub(r"<br\s*/?>", "\n", md, flags=re.IGNORECASE)
+
     lines = md.split("\n")
     result_parts: list[str] = []
 

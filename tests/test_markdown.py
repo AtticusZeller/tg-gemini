@@ -493,3 +493,37 @@ class TestLineNewlines:
         assert "<pre>" in result
         assert "after text" in result
         assert result.index("after text") > result.index("</pre>")
+
+
+class TestBrTagNormalization:
+    """Regression: LLM output may contain <br>, <br/>, <br /> — convert to newlines."""
+
+    def test_br_tag_replaced(self) -> None:
+        result = markdown_to_html("line one<br>line two")
+        assert "<br>" not in result
+        assert "line one" in result
+        assert "line two" in result
+
+    def test_br_self_closing_replaced(self) -> None:
+        result = markdown_to_html("line one<br/>line two")
+        assert "<br/>" not in result
+        assert "line one" in result
+        assert "line two" in result
+
+    def test_br_with_space_replaced(self) -> None:
+        result = markdown_to_html("line one<br />line two")
+        assert "<br />" not in result
+        assert "line one" in result
+        assert "line two" in result
+
+    def test_br_uppercase_replaced(self) -> None:
+        result = markdown_to_html("line one<BR>line two")
+        assert "<BR>" not in result
+        assert "line one" in result
+        assert "line two" in result
+
+    def test_br_not_escaped_to_entities(self) -> None:
+        """<br> should NOT become &lt;br&gt; in output."""
+        result = markdown_to_html("hello<br>world")
+        assert "&lt;br" not in result
+        assert "&lt;BR" not in result

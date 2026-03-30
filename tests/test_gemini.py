@@ -58,9 +58,9 @@ def test_format_tool_params_empty() -> None:
 
 
 def test_format_tool_params_shell() -> None:
-    assert _format_tool_params("shell", {"command": "ls -la"}) == "ls -la"
-    assert _format_tool_params("Bash", {"command": "echo hi"}) == "echo hi"
-    assert _format_tool_params("run_shell_command", {"command": "pwd"}) == "pwd"
+    assert _format_tool_params("shell", {"command": "ls -la"}) == "```bash\nls -la\n```"
+    assert _format_tool_params("Bash", {"command": "echo hi"}) == "```bash\necho hi\n```"
+    assert _format_tool_params("run_shell_command", {"command": "pwd"}) == "```bash\npwd\n```"
 
 
 def test_format_tool_params_shell_no_command() -> None:
