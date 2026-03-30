@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.24 - 2026-03-30
+
+### 🧪 Testing
+
+- *(claude)* Expand coverage for Claude agent to 95%+
+
 ## 0.0.23 - 2026-03-30
 
 ### 🚀 Features
