@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.25 - 2026-03-30
+
+### 🐛 Bug Fixes
+
+- *(agent)* Register /agent command in Telegram bot menu
+
 ## 0.0.24 - 2026-03-30
 
 ### 🧪 Testing
