@@ -612,8 +612,9 @@ def _make_proc(
     proc = AsyncMock()
     proc.returncode = returncode
     proc.stdout = _AsyncBytesStream(lines)
-    proc.stderr = AsyncMock()
-    proc.stderr.read = AsyncMock(return_value=stderr)
+    # stderr is drained via async-for; split into lines for iteration
+    stderr_lines = [line + b"\n" for line in stderr.split(b"\n") if line]
+    proc.stderr = _AsyncBytesStream(stderr_lines)
     proc.wait = AsyncMock(return_value=returncode)
     proc.terminate = MagicMock()
     proc.kill = MagicMock()
@@ -1129,3 +1130,152 @@ async def test_read_loop_task_done_callback_on_exception() -> None:
 
     # The callback was invoked with the exception
     assert len(callback_exc) > 0
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for stderr pipe-buffer deadlock (GH bug)
+# ---------------------------------------------------------------------------
+
+
+async def test_read_loop_stderr_drained_concurrently_with_stdout() -> None:
+    """Regression: stderr must be drained alongside stdout to avoid pipe deadlock.
+
+    Before the fix, _read_loop only read stdout; stderr was consumed after the
+    process exited.  If the process wrote enough to stderr to fill the OS pipe
+    buffer (~64 KB), it would block on stderr write, stop producing stdout, and
+    the whole pipeline would hang silently until the engine timeout.
+    """
+    session = _make_session()
+    # Simulate a process that writes both stdout JSONL events AND stderr output
+    lines = _jsonl(
+        {"type": "init", "session_id": "s-stderr-test", "model": "flash"},
+        {"type": "message", "role": "assistant", "content": "working…", "delta": True},
+        {"type": "result", "status": "success", "session_id": "s-stderr-test"},
+    )
+    proc = _make_proc(
+        lines=lines,
+        stderr=b"debug: step 1\ndebug: step 2\nwarning: something\n",
+    )
+    await session._read_loop(proc)
+
+    events = _drain(session)
+    types = [e.type for e in events]
+    # All stdout events were processed despite concurrent stderr output
+    assert EventType.TEXT in types  # init
+    assert EventType.RESULT in types
+    assert events[-1].done is True
+
+
+async def test_read_loop_large_stderr_does_not_block_events() -> None:
+    """Regression: even large stderr output should not block stdout event flow.
+
+    This simulates the actual deadlock scenario: Gemini writes progress/debug
+    info to stderr that fills the pipe buffer. Without concurrent draining,
+    stdout events would stop arriving.
+    """
+    session = _make_session()
+    lines = _jsonl(
+        {"type": "init", "session_id": "s-big-stderr", "model": "pro"},
+        {"type": "message", "role": "assistant", "content": "done", "delta": True},
+        {"type": "result", "status": "success", "session_id": "s-big-stderr"},
+    )
+    # Large stderr output (simulating debug logging that fills pipe buffer)
+    big_stderr = "\n".join(f"[debug] line {i}" for i in range(5000)).encode()
+    proc = _make_proc(lines=lines, stderr=big_stderr)
+    await session._read_loop(proc)
+
+    events = _drain(session)
+    # Verify all events came through despite large stderr
+    result_events = [e for e in events if e.type == EventType.RESULT]
+    assert len(result_events) == 1
+    assert result_events[0].done is True
+
+
+async def test_send_stores_read_task_on_session() -> None:
+    """Regression: send() must store the _read_loop task for later cancellation.
+
+    Before the fix, the task was created as fire-and-forget with no reference
+    stored, making it impossible for close() to cancel it.  This caused
+    'Task was destroyed but it is pending!' warnings.
+    """
+    session = _make_session()
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=_make_proc()),
+        patch("asyncio.create_task", side_effect=_close_coro),
+    ):
+        await session.send("hello")
+
+    assert session._read_task is not None
+
+
+async def test_close_cancels_read_task() -> None:
+    """Regression: close() must cancel and await the stored _read_loop task.
+
+    Without this, the _read_loop task outlives the session and produces
+    'Task was destroyed but it is pending!' at GC time.
+    """
+    session = _make_session()
+
+    # Simulate a read_task that is still running (never completed)
+    async def _hang_forever() -> None:
+        await asyncio.Event().wait()  # blocks forever
+
+    mock_task = asyncio.create_task(_hang_forever())
+    session._read_task = mock_task
+    session._proc = _make_proc()
+
+    await session.close()
+
+    # The task must have been cancelled and cleared
+    assert session._read_task is None
+    assert mock_task.cancelled()
+
+
+async def test_close_handles_already_done_read_task() -> None:
+    """close() should be safe when _read_task has already completed."""
+    session = _make_session()
+
+    async def _already_done() -> None:
+        pass
+
+    done_task = asyncio.create_task(_already_done())
+    # Let the task actually complete
+    await asyncio.sleep(0)
+    session._read_task = done_task
+    session._proc = _make_proc()
+
+    await session.close()
+
+    assert session._read_task is None
+    assert done_task.done()
+
+
+async def test_close_noop_when_no_read_task() -> None:
+    """close() is safe when _read_task is None (session never used)."""
+    session = _make_session()
+    session._proc = _make_proc()
+
+    await session.close()
+
+    assert session._read_task is None
+    assert not session.alive
+
+
+async def test_read_loop_stderr_multiline_on_error() -> None:
+    """Multi-line stderr on non-zero exit is captured and emitted as ERROR."""
+    session = _make_session()
+    lines = [json.dumps({"type": "result", "status": "success"}).encode() + b"\n"]
+    proc = _make_proc(
+        lines=lines,
+        returncode=1,
+        stderr=b"Error: line 1\nError: line 2\nError: line 3\n",
+    )
+    await session._read_loop(proc)
+
+    events = _drain(session)
+    error_events = [e for e in events if e.type == EventType.ERROR]
+    assert len(error_events) == 1
+    err_str = str(error_events[0].error)
+    assert "Error: line 1" in err_str
+    assert "Error: line 2" in err_str
+    assert "Error: line 3" in err_str

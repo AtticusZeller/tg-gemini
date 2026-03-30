@@ -212,6 +212,7 @@ class GeminiSession:
         self._alive = True
         self._temp_files: list[str] = []
         self._proc: asyncio.subprocess.Process | None = None
+        self._read_task: asyncio.Task[None] | None = None
 
     @property
     def events(self) -> asyncio.Queue[Event]:
@@ -298,8 +299,8 @@ class GeminiSession:
         )
         self._proc = proc
 
-        task = asyncio.create_task(self._read_loop(proc))
-        task.add_done_callback(
+        self._read_task = asyncio.create_task(self._read_loop(proc))
+        self._read_task.add_done_callback(
             lambda t: (
                 logger.error("GeminiSession: read loop crashed", exc_info=t.exception())
                 if t.exception()
@@ -312,6 +313,18 @@ class GeminiSession:
         """Read JSONL output from the Gemini process and emit events."""
         assert proc.stdout is not None
         assert proc.stderr is not None
+
+        # Drain stderr concurrently to prevent pipe-buffer deadlock:
+        # if stderr fills up (~64 KB), the process blocks on write and
+        # can't produce more stdout, causing a silent hang.
+        stderr_chunks: list[str] = []
+
+        async def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            async for line_bytes in proc.stderr:
+                stderr_chunks.append(line_bytes.decode(errors="replace"))  # noqa: PERF401
+
+        stderr_task = asyncio.create_task(_drain_stderr())
 
         try:
             coro = self._stream_stdout(proc.stdout)
@@ -336,9 +349,11 @@ class GeminiSession:
             self._temp_files.clear()
 
             await proc.wait()
+            # stderr pipe closes after process exit; let drain finish
+            with contextlib.suppress(asyncio.CancelledError):
+                await stderr_task
             if proc.returncode != 0:
-                stderr_data = await proc.stderr.read()
-                stderr_msg = stderr_data.decode(errors="replace").strip()
+                stderr_msg = "".join(stderr_chunks).strip()
                 if stderr_msg:
                     logger.error("GeminiSession: process failed", stderr=stderr_msg)
                     await self._events.put(
@@ -508,6 +523,11 @@ class GeminiSession:
 
     async def close(self) -> None:
         self._alive = False
+        if self._read_task is not None:
+            self._read_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._read_task
+            self._read_task = None
         await self.kill()
 
 
