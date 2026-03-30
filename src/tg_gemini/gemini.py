@@ -364,16 +364,22 @@ class GeminiSession:
 
     async def _stream_stdout(self, stdout: asyncio.StreamReader) -> None:
         """Read and parse JSONL lines from stdout."""
-        try:
-            async for line_bytes in stdout:
-                line = line_bytes.decode(errors="replace").rstrip()
-                if not line:
-                    continue
-                logger.debug("GeminiSession: raw line", line=line[:200])
-                self._parse_line(line)
-        except ValueError as exc:
-            # LimitOverrunError is wrapped as ValueError by StreamReader.readline
-            logger.error("GeminiSession: stdout line too long", error=exc)
+        while True:
+            try:
+                line_bytes = await stdout.readline()
+            except ValueError as exc:
+                # LimitOverrunError is wrapped as ValueError by StreamReader.readline.
+                # Log and continue so the loop itself keeps running.
+                logger.warning("GeminiSession: stdout read error, skipping", error=exc)
+                continue
+            if not line_bytes:
+                # EOF
+                break
+            line = line_bytes.decode(errors="replace").rstrip()
+            if not line:
+                continue
+            logger.debug("GeminiSession: raw line", line=line[:200])
+            self._parse_line(line)
 
     def _parse_line(self, line: str) -> None:
         """Parse a JSONL line, extracting all JSON objects from it."""
