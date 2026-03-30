@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.18 - 2026-03-30
+
+### 🐛 Bug Fixes
+
+- *(gemini)* Drain stderr concurrently to prevent pipe-buffer deadlock
+
 ## 0.0.16 - 2026-03-29
 
 ### 🐛 Bug Fixes
