@@ -364,22 +364,16 @@ class GeminiSession:
 
     async def _stream_stdout(self, stdout: asyncio.StreamReader) -> None:
         """Read and parse JSONL lines from stdout."""
-        while True:
-            try:
-                line_bytes = await stdout.readline()
-            except ValueError as exc:
-                # LimitOverrunError is wrapped as ValueError by StreamReader.readline.
-                # Log and continue so the loop itself keeps running.
-                logger.warning("GeminiSession: stdout read error, skipping", error=exc)
-                continue
-            if not line_bytes:
-                # EOF
-                break
-            line = line_bytes.decode(errors="replace").rstrip()
-            if not line:
-                continue
-            logger.debug("GeminiSession: raw line", line=line[:200])
-            self._parse_line(line)
+        try:
+            async for line_bytes in stdout:
+                line = line_bytes.decode(errors="replace").rstrip()
+                if not line:
+                    continue
+                logger.debug("GeminiSession: raw line", line=line[:200])
+                self._parse_line(line)
+        except ValueError as exc:
+            # LimitOverrunError is wrapped as ValueError by StreamReader.readline
+            logger.error("GeminiSession: stdout line too long", error=exc)
 
     def _parse_line(self, line: str) -> None:
         """Parse a JSONL line, extracting all JSON objects from it."""
@@ -440,6 +434,17 @@ class GeminiSession:
         if role == "user" or not content:
             return
         delta = raw.get("delta", False)
+        # Strip [Thought: xxx] prefix from thinking content; emit as THINKING
+        # event immediately so each thinking step appears as a separate message.
+        # Format is either "[Thought: true]Some text" or "[Thought: actual thought]"
+        if content.startswith("[Thought: "):
+            inner = content.removeprefix("[Thought: ")
+            if inner.endswith("]"):
+                inner = inner.removesuffix("]")
+            thought_text = inner.strip()
+            if thought_text:
+                self._events.put_nowait(Event(type=EventType.THINKING, content=thought_text))
+            return
         if delta:
             self._events.put_nowait(Event(type=EventType.TEXT, content=str(content)))
         else:

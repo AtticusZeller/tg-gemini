@@ -734,26 +734,16 @@ def _jsonl(*events: dict) -> list[bytes]:
 
 class _AsyncBytesStream:
     def __init__(self, lines: list[bytes]) -> None:
-        self._lines = list(lines)
-        self._idx = 0
+        self._lines = iter(lines)
 
     def __aiter__(self) -> "_AsyncBytesStream":
         return self
 
     async def __anext__(self) -> bytes:
-        if self._idx >= len(self._lines):
-            raise StopAsyncIteration
-        line = self._lines[self._idx]
-        self._idx += 1
-        return line
-
-    # Simulate asyncio.StreamReader.readline() which returns b"" on EOF
-    async def readline(self) -> bytes:
-        if self._idx >= len(self._lines):
-            return b""
-        line = self._lines[self._idx]
-        self._idx += 1
-        return line
+        try:
+            return next(self._lines)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
 
 
 def _make_proc_real(lines: list[bytes] = [], returncode: int = 0) -> MagicMock:  # noqa: B006
@@ -762,8 +752,8 @@ def _make_proc_real(lines: list[bytes] = [], returncode: int = 0) -> MagicMock: 
     proc = MagicMock()
     proc.returncode = returncode
     proc.stdout = _AsyncBytesStream(lines)
-    # stderr is drained via async-for; empty by default
-    proc.stderr = _AsyncBytesStream([])
+    proc.stderr = AsyncMock()
+    proc.stderr.read = AsyncMock(return_value=b"")
     proc.wait = AsyncMock(return_value=returncode)
     proc.terminate = MagicMock()
     proc.kill = MagicMock()

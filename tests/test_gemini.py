@@ -591,26 +591,16 @@ class _AsyncBytesStream:
     """Helper: async iterable over a list of byte lines for mocking proc.stdout."""
 
     def __init__(self, lines: list[bytes]) -> None:
-        self._lines = list(lines)  # list to allow rewind if needed
-        self._idx = 0
+        self._lines = iter(lines)
 
     def __aiter__(self) -> Self:
         return self
 
     async def __anext__(self) -> bytes:
-        if self._idx >= len(self._lines):
-            raise StopAsyncIteration
-        line = self._lines[self._idx]
-        self._idx += 1
-        return line
-
-    # Simulate asyncio.StreamReader.readline() which returns b"" on EOF
-    async def readline(self) -> bytes:
-        if self._idx >= len(self._lines):
-            return b""
-        line = self._lines[self._idx]
-        self._idx += 1
-        return line
+        try:
+            return next(self._lines)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
 
 
 def _make_proc(
@@ -1300,44 +1290,33 @@ async def test_stream_stdout_handles_line_too_long() -> None:
     """
     session = _make_session()
 
-    # Stream raises once, then returns b"" to allow loop exit
-    class _OverrunStreamOnceThenEmpty:
+    class _OverrunStream:
+        """Simulates a StreamReader that raises ValueError on iteration."""
+
         def __aiter__(self) -> Self:
             return self
 
         async def __anext__(self) -> bytes:
             raise ValueError("Separator is not found, and chunk exceed the limit")
 
-        async def readline(self) -> bytes:
-            if not hasattr(self, "_raised"):
-                self._raised = True
-                raise ValueError("Separator is not found, and chunk exceed the limit")
-            return b""
-
-    await session._stream_stdout(_OverrunStreamOnceThenEmpty())
-    # Should not raise — the ValueError is caught and loop exits on b""
+    await session._stream_stdout(_OverrunStream())
+    # Should not raise — the ValueError is caught and logged
 
 
 async def test_read_loop_with_limit_overrun() -> None:
     """Full _read_loop should survive a LimitOverrunError from stdout."""
     session = _make_session()
 
-    # Stream raises once, then returns b"" to allow loop exit
-    class _OverrunStreamOnceThenEmpty:
+    # Build a proc whose stdout immediately raises ValueError
+    class _OverrunStream:
         def __aiter__(self) -> Self:
             return self
 
         async def __anext__(self) -> bytes:
             raise ValueError("Separator is not found, and chunk exceed the limit")
 
-        async def readline(self) -> bytes:
-            if not hasattr(self, "_raised"):
-                self._raised = True
-                raise ValueError("Separator is not found, and chunk exceed the limit")
-            return b""
-
     proc = AsyncMock()
-    proc.stdout = _OverrunStreamOnceThenEmpty()
+    proc.stdout = _OverrunStream()
     proc.stderr = _AsyncBytesStream([])
     proc.wait = AsyncMock(return_value=0)
     proc.returncode = 0
