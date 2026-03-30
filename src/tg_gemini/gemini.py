@@ -443,7 +443,9 @@ class GeminiSession:
                 inner = inner.removesuffix("]")
             thought_text = inner.strip()
             if thought_text:
-                self._events.put_nowait(Event(type=EventType.THINKING, content=thought_text))
+                self._events.put_nowait(
+                    Event(type=EventType.THINKING, content=thought_text)
+                )
             return
         if delta:
             self._events.put_nowait(Event(type=EventType.TEXT, content=str(content)))

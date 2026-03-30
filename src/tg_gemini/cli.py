@@ -25,6 +25,7 @@ def start(
     ] = None,
 ) -> None:
     """Start the tg-gemini bot service."""
+    from tg_gemini.claude import ClaudeAgent
     from tg_gemini.config import load_config, resolve_config_path
     from tg_gemini.dedup import MessageDedup
     from tg_gemini.engine import Engine
@@ -62,13 +63,24 @@ def start(
 
     sessions = SessionManager(store_path=data_path / "sessions.json")
 
-    agent = GeminiAgent(
+    # Create agents
+    gemini_agent = GeminiAgent(
         work_dir=cfg.gemini.work_dir,
         model=cfg.gemini.model,
         mode=cfg.gemini.mode,
         cmd=cfg.gemini.cmd,
         api_key=cfg.gemini.api_key,
         timeout_mins=cfg.gemini.timeout_mins,
+    )
+
+    claude_agent = ClaudeAgent(
+        work_dir=cfg.claude.work_dir,
+        model=cfg.claude.model,
+        mode=cfg.claude.mode,
+        cmd=cfg.claude.cmd,
+        allowed_tools=cfg.claude.allowed_tools or None,
+        disallowed_tools=cfg.claude.disallowed_tools or None,
+        timeout_mins=cfg.claude.timeout_mins,
     )
 
     platform = TelegramPlatform(
@@ -89,13 +101,14 @@ def start(
 
     engine = Engine(
         config=cfg,
-        agent=agent,
+        agent=gemini_agent,
         platform=platform,
         sessions=sessions,
         i18n=i18n,
         rate_limiter=rate_limiter,
         dedup=dedup,
         skill_dirs=extra_skill_dirs,
+        claude_agent=claude_agent,
     )
 
     async def _run() -> None:

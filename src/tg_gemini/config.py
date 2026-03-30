@@ -8,12 +8,15 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 type GeminiMode = Literal["default", "auto_edit", "yolo", "plan"]
+type AgentType = Literal["gemini", "claude"]
 type LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 type AppLanguage = Literal["", "en", "zh"]
 
 __all__ = [
+    "AgentType",
     "AppConfig",
     "AppLanguage",
+    "ClaudeConfig",
     "DisplayConfig",
     "GeminiConfig",
     "GeminiMode",
@@ -78,9 +81,23 @@ class SkillConfig(_StrictModel):
     dirs: list[str] = Field(default_factory=list)
 
 
+class ClaudeConfig(_StrictModel):
+    """Configuration for Claude Code CLI agent."""
+
+    work_dir: str = "."
+    model: str = ""
+    mode: str = "default"  # default | acceptEdits | plan | bypassPermissions | dontAsk
+    cmd: str = "claude"
+    allowed_tools: list[str] = Field(default_factory=list)
+    disallowed_tools: list[str] = Field(default_factory=list)
+    timeout_mins: _NonNegInt = 0
+
+
 class AppConfig(_StrictModel):
     telegram: TelegramConfig
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+    agent: AgentType = "gemini"
     data_dir: str = "~/.tg-gemini"
     language: AppLanguage = ""
     log: LogConfig = Field(default_factory=LogConfig)

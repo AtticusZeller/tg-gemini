@@ -17,7 +17,7 @@ __all__ = [
 
 
 class EventType(StrEnum):
-    """Types of events from Gemini CLI stream."""
+    """Types of events from agent stream (Gemini or Claude Code)."""
 
     TEXT = "text"
     TOOL_USE = "tool_use"
@@ -25,6 +25,7 @@ class EventType(StrEnum):
     RESULT = "result"
     ERROR = "error"
     THINKING = "thinking"
+    PERMISSION_REQUEST = "permission_request"
 
 
 @dataclass
@@ -47,7 +48,7 @@ class FileAttachment:
 
 @dataclass
 class Event:
-    """An event from the Gemini CLI stream."""
+    """An event from the agent stream (Gemini CLI or Claude Code)."""
 
     type: EventType
     content: str = ""
@@ -56,6 +57,7 @@ class Event:
     session_id: str = ""
     done: bool = False
     error: Exception | None = None
+    request_id: str = ""  # for PERMISSION_REQUEST events
 
 
 @dataclass

@@ -8,6 +8,10 @@
 # 数据目录：存放 sessions.json 等持久化文件
 data_dir = "~/.tg-gemini"
 
+# 默认 Agent: "gemini" | "claude"
+# 用户可通过 /agent 命令切换（per-session）
+agent = "gemini"
+
 # 界面语言
 # ""   = 自动检测（消息含 CJK 字符 → ZH，否则 → EN）
 # "en" = 强制英文
@@ -72,6 +76,38 @@ cmd = "gemini"
 # 每轮超时分钟数
 # 0 = 不限制（推荐，长任务不会被中断）
 # N = N 分钟后自动 kill 子进程
+timeout_mins = 0
+
+
+# ── Claude Code CLI ──────────────────────────────────────────────────────────
+[claude]
+# Claude Code 命令的工作目录
+work_dir = "."
+
+# 模型名称（空字符串 = 使用 CLI 默认值）
+# 可用模型：sonnet | opus | haiku
+model = ""
+
+# 工具调用审批模式
+# "default"         = 每次工具调用需确认（无交互环境会卡住）
+# "acceptEdits"     = 自动批准文件编辑，其他需确认
+# "plan"            = 只读计划模式
+# "bypassPermissions" = 全自动批准所有操作（YOLO 模式）
+# "dontAsk"         = 自动拒绝所有工具调用
+mode = "default"
+
+# claude 可执行文件路径
+cmd = "claude"
+
+# 允许的工具列表（空列表 = 不限制）
+# 例：allowed_tools = ["Bash", "Read", "Edit", "Write"]
+allowed_tools = []
+
+# 禁止的工具列表
+disallowed_tools = []
+
+# 每轮超时分钟数
+# 0 = 不限制
 timeout_mins = 0
 
 

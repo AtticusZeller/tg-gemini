@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tg_gemini.config import AgentType
+
 __all__ = ["HistoryEntry", "Session", "SessionManager"]
 
 
@@ -29,6 +31,7 @@ class Session:
     id: str
     user_key: str = ""
     agent_session_id: str = ""
+    agent_type: AgentType = "gemini"  # which agent this session uses
     name: str = ""
     history: list[HistoryEntry] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -219,6 +222,7 @@ class SessionManager:
                 "id": s.id,
                 "user_key": s.user_key,
                 "agent_session_id": s.agent_session_id,
+                "agent_type": s.agent_type,
                 "name": s.name,
                 "history": [
                     {
@@ -263,10 +267,14 @@ class SessionManager:
                 )
                 for h in sd.get("history", [])
             ]
+            agent_type = sd.get("agent_type", "gemini")
             session = Session(
                 id=sd["id"],
                 user_key=sd.get("user_key", ""),
                 agent_session_id=sd.get("agent_session_id", ""),
+                agent_type=agent_type
+                if agent_type in ("gemini", "claude")
+                else "gemini",
                 name=sd.get("name", ""),
                 history=history,
                 created_at=datetime.fromisoformat(sd["created_at"]),

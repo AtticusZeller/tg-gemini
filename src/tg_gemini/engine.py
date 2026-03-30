@@ -1,4 +1,4 @@
-"""Engine: orchestrates Telegram messages → Gemini sessions → streaming replies."""
+"""Engine: orchestrates Telegram messages → agent sessions → streaming replies."""
 
 import asyncio
 import contextlib
@@ -9,8 +9,9 @@ from pathlib import Path
 from loguru import logger
 
 from tg_gemini.card import Card, CardBuilder, CardButton
+from tg_gemini.claude import ClaudeAgent, ClaudeSession
 from tg_gemini.commands import CommandLoader
-from tg_gemini.config import AppConfig
+from tg_gemini.config import AgentType, AppConfig
 from tg_gemini.dedup import MessageDedup
 from tg_gemini.gemini import GeminiAgent, GeminiSession
 from tg_gemini.i18n import I18n, Language, MsgKey
@@ -46,8 +47,18 @@ class _InteractiveState:
     delete_phase: str = ""  # "" | "select" | "confirm"
 
 
+@dataclass
+class _PendingPermission:
+    """A pending permission request awaiting user response."""
+
+    request_id: str
+    tool_name: str
+    tool_input: str
+    ctx: ReplyContext
+
+
 class Engine:
-    """Routes incoming messages to Gemini and streams responses back to Telegram."""
+    """Routes incoming messages to Gemini or Claude and streams responses back to Telegram."""
 
     def __init__(
         self,
@@ -59,9 +70,11 @@ class Engine:
         rate_limiter: RateLimiter | None = None,
         dedup: MessageDedup | None = None,
         skill_dirs: list[Path] | None = None,
+        claude_agent: ClaudeAgent | None = None,
     ) -> None:
         self._config = config
-        self._agent = agent
+        self._gemini = agent
+        self._claude = claude_agent
         self._platform = platform
         self._sessions = sessions
         self._i18n = i18n
@@ -70,7 +83,9 @@ class Engine:
         self._share_session = config.telegram.share_session_in_channel
         self._queues: dict[str, asyncio.Queue[Message]] = {}
         self._active_gemini: dict[str, GeminiSession] = {}
+        self._active_claude: dict[str, ClaudeSession] = {}
         self._interactive: dict[str, _InteractiveState] = {}
+        self._pending_permissions: dict[str, _PendingPermission] = {}
 
         # Load Commands and Skills (auto-load from .gemini/commands/ and .gemini/skills/)
         work_dir = Path(config.gemini.work_dir).expanduser().resolve()
@@ -91,6 +106,7 @@ class Engine:
         self._platform.register_callback_prefix("cmd:", self._handle_cmd_callback)
         self._platform.register_callback_prefix("act:", self._handle_act_callback)
         self._platform.register_callback_prefix("sel:", self._handle_sel_callback)
+        self._platform.register_callback_prefix("perm:", self._handle_perm_callback)
         await self._platform.start(
             self.handle_message, on_started=self._refresh_commands_menu
         )
@@ -160,6 +176,8 @@ class Engine:
                 await self._cmd_model(msg, args)
             case "/mode":
                 await self._cmd_mode(msg, args)
+            case "/agent":
+                await self._cmd_agent(msg, args)
             case "/lang":
                 await self._cmd_lang(msg, args)
             case "/quiet":
@@ -188,14 +206,14 @@ class Engine:
                 if command := self._cmd_loader.get(cmd_name):
                     logger.info("executing command", cmd=cmd_name, user=msg.user_name)
                     expanded = await self._cmd_loader.expand_prompt(command, args)
-                    await self._send_to_gemini(msg, expanded)
+                    await self._send_to_agent(msg, expanded)
                     return True
 
                 # Skills (from skill dirs)
                 if skill := self._skill_registry.get(cmd_name):
                     logger.info("executing skill", skill=skill.name, user=msg.user_name)
                     prompt = SkillRegistry.build_invocation_prompt(skill, args)
-                    await self._send_to_gemini(msg, prompt)
+                    await self._send_to_agent(msg, prompt)
                     return True
 
                 await self._reply(msg, self._i18n.t(MsgKey.UNKNOWN_CMD))
@@ -203,7 +221,7 @@ class Engine:
         return True
 
     async def _process(self, msg: Message, session: Session) -> None:
-        """Run Gemini and stream response back. Drains queued messages after completion."""
+        """Run agent and stream response back. Drains queued messages after completion."""
         acquired = await session.try_lock()
         if not acquired:
             await self._reply(msg, self._i18n.t(MsgKey.SESSION_BUSY))
@@ -234,19 +252,37 @@ class Engine:
                     pass
 
     async def _run_gemini(self, msg: Message, session: Session) -> None:
-        """Send prompt to Gemini and stream events to Telegram."""
+        """Backward-compatible alias for _run_agent (gemini only)."""
+        if session.agent_type != "gemini":
+            session.agent_type = "gemini"
+            self._sessions._save()
+        await self._run_agent(msg, session)
+
+    async def _run_agent(self, msg: Message, session: Session) -> None:
+        """Send prompt to Gemini or Claude and stream events to Telegram."""
         assert msg.reply_ctx is not None
         ctx: ReplyContext = msg.reply_ctx
 
         typing_task = await self._platform.start_typing(ctx)
 
-        gemini_session: GeminiSession | None = None
+        agent_session = None
         istate = self._interactive.get(msg.session_key)
+        agent_type = session.agent_type or "gemini"
+
         try:
-            gemini_session = self._agent.start_session(
-                resume_id=session.agent_session_id
-            )
-            self._active_gemini[msg.session_key] = gemini_session
+            if agent_type == "claude":
+                if self._claude is None:
+                    await self._platform.send(ctx, "Claude agent not configured")
+                    return
+                agent_session = self._claude.start_session(
+                    resume_id=session.agent_session_id
+                )
+                self._active_claude[msg.session_key] = agent_session
+            else:
+                agent_session = self._gemini.start_session(
+                    resume_id=session.agent_session_id
+                )
+                self._active_gemini[msg.session_key] = agent_session
 
             preview = StreamPreview(
                 config=self._config.stream_preview,
@@ -259,7 +295,7 @@ class Engine:
             if msg.content:
                 session.add_history("user", msg.content, self._sessions.max_history)
 
-            await gemini_session.send(
+            await agent_session.send(
                 prompt=msg.content, images=msg.images or [], files=msg.files or []
             )
 
@@ -269,16 +305,16 @@ class Engine:
             while True:
                 try:
                     event = await asyncio.wait_for(
-                        gemini_session.events.get(), timeout=300
+                        agent_session.events.get(), timeout=300
                     )
                 except TimeoutError:
-                    logger.error("Engine: gemini session timed out")
+                    logger.error("Engine: agent session timed out")
                     break
 
                 match event.type:
                     case EventType.TEXT:
                         if event.session_id:
-                            # init event: store session_id
+                            # init/system event: store session_id
                             session.agent_session_id = event.session_id
                         elif event.content:
                             full_text += event.content
@@ -311,6 +347,27 @@ class Engine:
                                 tool_msg = f"🔧 **{event.tool_name}**"
                             await self._platform.send(ctx, tool_msg)
 
+                    case EventType.PERMISSION_REQUEST:
+                        # Claude only: ask user for permission to run tool
+                        await preview.freeze()
+                        self._pending_permissions[event.request_id] = (
+                            _PendingPermission(
+                                request_id=event.request_id,
+                                tool_name=event.tool_name,
+                                tool_input=event.tool_input,
+                                ctx=ctx,
+                            )
+                        )
+                        perm_msg = (
+                            f"🤔 **{event.tool_name}**\n──────────\n"
+                            f"{event.tool_input or 'Permission required'}"
+                        )
+                        buttons = [
+                            ("Allow", f"perm:{event.request_id}:allow"),
+                            ("Deny", f"perm:{event.request_id}:deny"),
+                        ]
+                        await self._platform.send_with_buttons(ctx, perm_msg, buttons)
+
                     case EventType.ERROR:
                         err_str = str(event.error) if event.error else "unknown error"
                         await self._platform.send(
@@ -339,8 +396,9 @@ class Engine:
         finally:
             typing_task.cancel()
             self._active_gemini.pop(msg.session_key, None)
-            if gemini_session:
-                await gemini_session.close()
+            self._active_claude.pop(msg.session_key, None)
+            if agent_session:
+                await agent_session.close()
 
     async def _reply(self, msg: Message, content: str) -> None:
         if msg.reply_ctx is not None:
@@ -433,8 +491,16 @@ class Engine:
 
                 case "/model":
                     if args:
-                        self._agent.model = args
-                    card = self._build_model_card()
+                        # Set model on the active agent
+                        session = self._sessions.get(session_key)
+                        agent_type = session.agent_type if session else "gemini"
+                        if agent_type == "claude" and self._claude:
+                            self._claude.model = args
+                        else:
+                            self._gemini.model = args
+                    card = self._build_model_card(
+                        session.agent_type if session else "gemini"
+                    )
                     await self._platform.edit_card(ctx, message_id, card)
 
                 case "/delete_one":
@@ -471,6 +537,37 @@ class Engine:
             card = self._build_delete_select_card(session_key)
             await self._platform.edit_card(ctx, message_id, card)
 
+    async def _handle_perm_callback(
+        self, data: str, user_id: str, chat_id: int, message_id: int
+    ) -> None:
+        """Handle permission response. data = 'perm:{request_id}:{allow|deny}'"""
+        parts = data.split(":", 3)
+        if len(parts) < 3:
+            return
+        request_id = parts[1]
+        action = parts[2]
+        session_key = self._session_key(chat_id, user_id)
+        ctx = ReplyContext(chat_id=chat_id, message_id=message_id)
+
+        pending = self._pending_permissions.pop(request_id, None)
+        if pending is None:
+            logger.debug("Engine: permission not found", request_id=request_id)
+            return
+
+        # Find the active claude session for this user
+        agent_session = self._active_claude.get(session_key)
+        if agent_session is None:
+            await self._platform.send(ctx, "No active Claude session")
+            return
+
+        allow = action == "allow"
+        await agent_session.respond_permission(request_id, allow)
+
+        if allow:
+            await self._platform.send(ctx, f"✅ {pending.tool_name} allowed")
+        else:
+            await self._platform.send(ctx, f"❌ {pending.tool_name} denied")
+
     # ── card builders ─────────────────────────────────────────────────────
 
     def _build_lang_card(self) -> Card:
@@ -484,12 +581,22 @@ class Engine:
             .build()
         )
 
-    def _build_model_card(self) -> Card:
-        current = self._agent.model or "(default)"
-        models = self._agent.available_models()
-        buttons = [
-            CardButton(m.desc or m.name, f"act:cmd:/model {m.name}") for m in models
-        ]
+    def _build_model_card(self, agent_type: AgentType = "gemini") -> Card:
+        if agent_type == "claude" and self._claude:
+            agent = self._claude
+            current = agent.model or "(default)"
+            models = agent.available_models()
+            buttons = [
+                CardButton(m.get("desc", ""), f"act:cmd:/model {m['name']}")
+                for m in models
+            ]
+        else:
+            agent = self._gemini
+            current = agent.model or "(default)"
+            models = agent.available_models()
+            buttons = [
+                CardButton(m.desc or m.name, f"act:cmd:/model {m.name}") for m in models
+            ]
         return (
             CardBuilder()
             .title(self._i18n.tf(MsgKey.MODEL_CURRENT, current))
@@ -558,6 +665,8 @@ class Engine:
 
     async def _cmd_new(self, msg: Message) -> None:
         session = self._sessions.new_session(msg.session_key)
+        session.agent_type = "gemini"  # default to gemini for new sessions
+        self._sessions._save()
         logger.info(
             "Engine: new session", session_key=msg.session_key, session_id=session.id
         )
@@ -575,16 +684,34 @@ class Engine:
             )
         await self._reply(msg, self._i18n.t(MsgKey.STOP_OK))
 
-    async def _cmd_model(self, msg: Message, _args: str) -> None:
+    async def _cmd_model(self, msg: Message, args: str) -> None:
+        session = self._sessions.get(msg.session_key)
+        agent_type = session.agent_type if session else "gemini"
+
+        if args:
+            if agent_type == "claude" and self._claude:
+                self._claude.model = args
+            else:
+                self._gemini.model = args
+
         if msg.reply_ctx is None:
             return
-        card = self._build_model_card()
+        card = self._build_model_card(agent_type)
         await self._platform.send_card(msg.reply_ctx, card)
 
     async def _cmd_mode(self, msg: Message, args: str) -> None:
-        valid_modes = ("default", "auto_edit", "yolo", "plan")
+        session = self._sessions.get(msg.session_key)
+        agent_type = session.agent_type if session else "gemini"
+        valid_modes = (
+            ("default", "auto_edit", "yolo", "plan")
+            if agent_type == "gemini"
+            else ("default", "acceptEdits", "plan", "bypassPermissions", "dontAsk")
+        )
         if args and args in valid_modes:
-            self._agent.mode = args
+            if agent_type == "claude" and self._claude:
+                self._claude.mode = args
+            else:
+                self._gemini.mode = args
             await self._reply(msg, self._i18n.tf(MsgKey.MODE_SWITCHED, args))
         elif args:
             modes_str = " | ".join(valid_modes)
@@ -592,8 +719,27 @@ class Engine:
                 msg, self._i18n.tf(MsgKey.MODE_SWITCHED, f"invalid. Use: {modes_str}")
             )
         else:
-            current = self._agent.mode
+            if agent_type == "claude" and self._claude:
+                current = self._claude.mode
+            else:
+                current = self._gemini.mode
             await self._reply(msg, self._i18n.tf(MsgKey.MODE_CURRENT, current))
+
+    async def _cmd_agent(self, msg: Message, args: str) -> None:
+        """Show or switch the active agent."""
+        session = self._sessions.get(msg.session_key)
+        current = session.agent_type if session else "gemini"
+
+        if args and args in ("gemini", "claude"):
+            if args == "claude" and self._claude is None:
+                await self._reply(msg, "Claude agent not configured")
+                return
+            if session:
+                session.agent_type = args  # type: ignore[assignment]
+                self._sessions._save()
+            await self._reply(msg, f"Agent switched to {args}")
+        else:
+            await self._reply(msg, f"Current agent: {current} (gemini | claude)")
 
     async def _cmd_lang(self, msg: Message, args: str) -> None:
         if msg.reply_ctx is None:
@@ -619,8 +765,13 @@ class Engine:
             return
         session = self._sessions.get(msg.session_key)
         istate = self._interactive.get(msg.session_key)
-        model = self._agent.model or "(default)"
-        mode = self._agent.mode
+        agent_type = session.agent_type if session else "gemini"
+        if agent_type == "claude" and self._claude:
+            model = self._claude.model or "(default)"
+            mode = self._claude.mode
+        else:
+            model = self._gemini.model or "(default)"
+            mode = self._gemini.mode
         session_name = session.summary if session else "(none)"
         quiet_icon = "✅" if (istate and istate.quiet) else "❌"
         card = (
@@ -628,6 +779,7 @@ class Engine:
             .title("Status")
             .markdown(
                 self._i18n.tf(MsgKey.STATUS_INFO, model, mode, session_name, quiet_icon)
+                + f"\nAgent: {agent_type}"
             )
             .build()
         )
@@ -692,8 +844,8 @@ class Engine:
 
     # ── Skills + Commands helpers ─────────────────────────────────────────
 
-    async def _send_to_gemini(self, msg: Message, content: str) -> None:
-        """Forward expanded skill/command prompt to Gemini."""
+    async def _send_to_agent(self, msg: Message, content: str) -> None:
+        """Forward expanded skill/command prompt to the active agent."""
         new_msg = Message(
             session_key=msg.session_key,
             platform=msg.platform,
