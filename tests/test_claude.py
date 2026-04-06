@@ -103,7 +103,10 @@ def test_format_tool_params_websearch() -> None:
 
 
 def test_format_tool_params_webfetch() -> None:
-    assert _format_tool_params("WebFetch", {"url": "https://example.com"}) == "https://example.com"
+    assert (
+        _format_tool_params("WebFetch", {"url": "https://example.com"})
+        == "https://example.com"
+    )
 
 
 def test_format_tool_params_task() -> None:
@@ -112,7 +115,10 @@ def test_format_tool_params_task() -> None:
 
 def test_format_tool_params_ask_question() -> None:
     q = {"question": "What is the weather?"}
-    assert _format_tool_params("AskUserQuestion", {"questions": [q]}) == "What is the weather?"
+    assert (
+        _format_tool_params("AskUserQuestion", {"questions": [q]})
+        == "What is the weather?"
+    )
 
 
 def test_format_tool_params_write_no_content() -> None:
@@ -258,9 +264,7 @@ def test_session_handle_assistant_text() -> None:
         "type": "assistant",
         "message": {
             "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Hello world"},
-            ],
+            "content": [{"type": "text", "text": "Hello world"}],
         },
     }
     session._handle_assistant(raw)
@@ -300,11 +304,7 @@ def test_session_handle_assistant_tool_use() -> None:
             "role": "assistant",
             "content": [
                 {"type": "text", "text": "Let me check"},
-                {
-                    "type": "tool_use",
-                    "name": "Read",
-                    "input": {"file_path": "/x.py"},
-                },
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
             ],
         },
     }
@@ -332,7 +332,7 @@ def test_session_handle_assistant_ask_user_skipped() -> None:
                     "type": "tool_use",
                     "name": "AskUserQuestion",
                     "input": {"questions": [{"question": "Continue?"}]},
-                },
+                }
             ],
         },
     }
@@ -392,9 +392,7 @@ def test_session_handle_control_cancel_request() -> None:
     """control_cancel_request just logs, no event emitted."""
     session = _make_session()
     # Goes through _handle_event which dispatches to _handle_control_cancel_request
-    session._handle_event(
-        {"type": "control_cancel_request", "request_id": "req-789"}
-    )
+    session._handle_event({"type": "control_cancel_request", "request_id": "req-789"})
     assert session._events.empty()
 
 
@@ -412,7 +410,15 @@ def test_session_parse_line_valid_json() -> None:
 def test_session_parse_line_multiple_json() -> None:
     session = _make_session()
     j1 = json.dumps({"type": "system", "session_id": "s1"})
-    j2 = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}})
+    j2 = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}],
+            },
+        }
+    )
     session._parse_line(j1 + j2)
     evt1 = session._events.get_nowait()
     assert evt1.session_id == "s1"
@@ -539,7 +545,9 @@ async def test_session_send_with_images_and_files() -> None:
         mock_exec.return_value = proc
 
         img = ImageAttachment(mime_type="image/jpeg", data=b"fake_jpg")
-        f = FileAttachment(mime_type="text/plain", data=b"content", file_name="test.txt")
+        f = FileAttachment(
+            mime_type="text/plain", data=b"content", file_name="test.txt"
+        )
         await session.send("test prompt", images=[img], files=[f])
         assert mock_exec.called
 
@@ -777,12 +785,27 @@ async def test_read_loop_tool_use_and_result() -> None:
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Let me read it"},
-                    {"type": "tool_use", "name": "Read", "input": {"file_path": "/x.py"}},
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": "/x.py"},
+                    },
                 ],
             },
         },
-        {"type": "tool_result", "tool_id": "t1", "status": "success", "output": "content"},
-        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Here"}]}},
+        {
+            "type": "tool_result",
+            "tool_id": "t1",
+            "status": "success",
+            "output": "content",
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Here"}],
+            },
+        },
         {"type": "result", "result": "final"},
     )
     session = _make_session()
@@ -993,7 +1016,7 @@ async def test_session_kill_falls_back_to_kill_on_timeout() -> None:
     session._proc = proc
 
     async def wait_for_timeout(coro: Any, **kwargs: Any) -> None:
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     with patch("asyncio.wait_for", side_effect=wait_for_timeout):
         await session.kill()
@@ -1009,6 +1032,7 @@ def test_list_sessions_no_dir() -> None:
     """list_sessions returns empty when ~/.claude/projects doesn't exist."""
     agent = ClaudeAgent(work_dir="/nonexistent/path")
     import asyncio
+
     result = asyncio.run(agent.list_sessions())
     assert result == []
 
@@ -1017,14 +1041,13 @@ def test_delete_session_no_dir() -> None:
     """delete_session returns False when dir doesn't exist."""
     agent = ClaudeAgent(work_dir="/nonexistent/path")
     import asyncio
+
     result = asyncio.run(agent.delete_session("any-session"))
     assert result is False
 
 
 def test_delete_session_not_found() -> None:
     """delete_session returns False when session file doesn't exist."""
-    import tempfile
-    import os
 
     # Create a temp projects dir without the session file
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1032,6 +1055,7 @@ def test_delete_session_not_found() -> None:
         with patch.object(Path, "home", return_value=Path(tmpdir)):
             agent = ClaudeAgent(work_dir="/some/project")
             import asyncio
+
             result = asyncio.run(agent.delete_session("nonexistent-session"))
             assert result is False
 
@@ -1058,8 +1082,7 @@ async def test_stream_stdout_reads_lines() -> None:
     """Normal stdout iteration should parse JSON lines."""
     session = _make_session()
     lines = _jsonl(
-        {"type": "system", "session_id": "s6"},
-        {"type": "result", "result": ""},
+        {"type": "system", "session_id": "s6"}, {"type": "result", "result": ""}
     )
     proc = _make_proc(lines=lines)
     await session._read_loop(proc)
@@ -1243,8 +1266,15 @@ def test_list_sessions_with_files(tmp_path: Path) -> None:
     # Write a session JSONL file
     session_file = project_dir / "test-session-id.jsonl"
     lines = [
-        json.dumps({"type": "user", "message": {"role": "user", "content": "Hello world this is a test"}}),
-        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "Hi"}}),
+        json.dumps(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "Hello world this is a test"},
+            }
+        ),
+        json.dumps(
+            {"type": "assistant", "message": {"role": "assistant", "content": "Hi"}}
+        ),
     ]
     session_file.write_text("\n".join(lines))
 
@@ -1269,9 +1299,7 @@ def test_list_sessions_string_content(tmp_path: Path) -> None:
     project_dir.mkdir(parents=True)
 
     session_file = project_dir / "str-content-session.jsonl"
-    lines = [
-        json.dumps({"type": "user", "message": "string message content here"}),
-    ]
+    lines = [json.dumps({"type": "user", "message": "string message content here"})]
     session_file.write_text("\n".join(lines))
 
     with patch.object(Path, "home", return_value=tmp_path):
@@ -1458,5 +1486,7 @@ def test_format_tool_params_shell() -> None:
 
 def test_format_tool_params_edit_no_diff() -> None:
     """Edit with same old/new returns just the path."""
-    result = _format_tool_params("Edit", {"file_path": "/a.py", "old_string": "x", "new_string": "x"})
+    result = _format_tool_params(
+        "Edit", {"file_path": "/a.py", "old_string": "x", "new_string": "x"}
+    )
     assert result == "/a.py"

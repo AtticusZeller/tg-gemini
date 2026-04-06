@@ -2162,10 +2162,7 @@ async def test_handle_perm_callback_allow() -> None:
 
     ctx = ReplyContext(chat_id=1, message_id=10)
     engine._pending_permissions["req-1"] = _PendingPermission(
-        request_id="req-1",
-        tool_name="Bash",
-        tool_input="ls",
-        ctx=ctx,
+        request_id="req-1", tool_name="Bash", tool_input="ls", ctx=ctx
     )
 
     # Set up a mock Claude session
@@ -2185,10 +2182,7 @@ async def test_handle_perm_callback_deny() -> None:
 
     ctx = ReplyContext(chat_id=1, message_id=10)
     engine._pending_permissions["req-2"] = _PendingPermission(
-        request_id="req-2",
-        tool_name="Edit",
-        tool_input="file.py",
-        ctx=ctx,
+        request_id="req-2", tool_name="Edit", tool_input="file.py", ctx=ctx
     )
     mock_session = AsyncMock()
     engine._active_claude["telegram:1:2"] = mock_session
@@ -2213,10 +2207,7 @@ async def test_handle_perm_callback_no_claude_session() -> None:
 
     ctx = ReplyContext(chat_id=1, message_id=10)
     engine._pending_permissions["req-3"] = _PendingPermission(
-        request_id="req-3",
-        tool_name="Bash",
-        tool_input="rm",
-        ctx=ctx,
+        request_id="req-3", tool_name="Bash", tool_input="rm", ctx=ctx
     )
     # No active claude session
     await engine._handle_perm_callback("perm:req-3:allow", "2", 1, 10)
