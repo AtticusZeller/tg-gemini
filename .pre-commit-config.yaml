@@ -30,7 +30,7 @@ repos:
         files: \.(py|sh|json|yml|yaml|md)$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.8
+    rev: v0.15.9
     hooks:
       - id: ruff
         args: [--fix]
@@ -38,7 +38,7 @@ repos:
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     # uv version.
-    rev: 0.11.2
+    rev: 0.11.3
     hooks:
       # Update the uv lockfile
       - id: uv-lock

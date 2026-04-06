@@ -59,8 +59,13 @@ def test_format_tool_params_empty() -> None:
 
 def test_format_tool_params_shell() -> None:
     assert _format_tool_params("shell", {"command": "ls -la"}) == "```bash\nls -la\n```"
-    assert _format_tool_params("Bash", {"command": "echo hi"}) == "```bash\necho hi\n```"
-    assert _format_tool_params("run_shell_command", {"command": "pwd"}) == "```bash\npwd\n```"
+    assert (
+        _format_tool_params("Bash", {"command": "echo hi"}) == "```bash\necho hi\n```"
+    )
+    assert (
+        _format_tool_params("run_shell_command", {"command": "pwd"})
+        == "```bash\npwd\n```"
+    )
 
 
 def test_format_tool_params_shell_no_command() -> None:
@@ -1153,8 +1158,7 @@ async def test_read_loop_stderr_drained_concurrently_with_stdout() -> None:
         {"type": "result", "status": "success", "session_id": "s-stderr-test"},
     )
     proc = _make_proc(
-        lines=lines,
-        stderr=b"debug: step 1\ndebug: step 2\nwarning: something\n",
+        lines=lines, stderr=b"debug: step 1\ndebug: step 2\nwarning: something\n"
     )
     await session._read_loop(proc)
 
